@@ -143,6 +143,25 @@ class Update(Subcommand):
     Update .svn to the current branch's svn revision and branch.
     '''
 
+class GenerateIgnore(Subcommand):
+    '''Generate an ignore file'''
+
+    def init_parser(self, parser):
+        # TODO Accept optional argument of gitignroe manual file
+        pass
+
+    def run(self, args):
+
+        # Get a list of svn externals
+        # (Parse svn st for externals)
+
+        # Use git-svn to create a list of the svn ingores
+
+        # Add our own .gitignore-manual file
+
+        # Combine and sort the list we've created
+        pass
+
 
 def parse_args():
     parser = argparse.ArgumentParser(prog='ggit')
