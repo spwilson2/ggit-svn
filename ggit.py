@@ -1,10 +1,15 @@
+#!/usr/bin/python
+
 import argparse
+import itertools
 import logging
 import pprint
 import tempfile
 import os
-import subprocess
+import re
 import shutil
+import sys
+import subprocess
 
 class Cwd:
     def __init__(self, directory):
@@ -32,9 +37,22 @@ def call(*args, **kwargs):
         kwargs.setdefault('executable', 'bash')
         kwargs.setdefault('shell', True)
 
-    pprint.pprint(('Call: ', args, kwargs))
+    pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
     return subprocess.check_output(*args, **kwargs)
 
+def get_revision():
+    head_entry = call('git svn log --limit 1')
+    head_entry = head_entry.splitlines()
+    match = re.search('r(\d*)', head_entry[1])
+    assert match
+    revision = match.group(0)
+    return revision
+
+def git_update(revision):
+    call('svn revert -q -R .')
+    call('svn update -q --force --accept theirs-full --set-depth=infinity -r %s'
+            % revision)
+    call('git checkout --force')
 
 class Subcommand(object):
 
@@ -86,7 +104,6 @@ class Clone(Subcommand):
         with Cwd(dest):
             call('git show origin/git-svn-config:config >> .git/config')
             call('git fetch origin "refs/heads/svn/*:refs/remotes/rtosvc/svn/*"')
-            # TODO Assert user had git-svn installed.
             call('git svn fetch rtosvc')
             svn_url = call('git svn info --url')
             svn_url = svn_url.rstrip()
@@ -100,11 +117,8 @@ class Clone(Subcommand):
                         [svn_url, td.dir]
                 call(checkout_cmd, shell=False)
                 call('cp -r'.split() + [os.path.join(td.dir, '.svn'), '.svn'], shell=False)
-            call('svn revert -q -R .')
-            # TODO Update to same revision as the git branch.
-            call('svn update -q --force --accept theirs-full --set-depth=infinity')
-            call('git checkout --force')
-
+            rev = get_revision()
+            git_update(rev)
 
 
 class Setup(Subcommand):
@@ -129,19 +143,33 @@ class Rebase(Subcommand):
     '''
     Rebase the current branch on top of a the latest fetched git-svn.
     '''
-    pass
+    def init_parser(self, parser):
+        pass
+
+    def run(self, args):
+        call('git svn rebase')
+        Update().run(args)
 
 
 class Pull(Subcommand):
     '''
     Fetch the latest svn changes and rebase the current branch on top of them.
     '''
+    def run(self, args):
+        call('git svn fetch')
+        Rebase().run(args)
 
 
 class Update(Subcommand):
     '''
     Update .svn to the current branch's svn revision and branch.
     '''
+    def init_parser(self, parser):
+        pass
+
+    def run(self, args):
+        rev = get_revision()
+        git_update(rev)
 
 class GenerateIgnore(Subcommand):
     '''Generate an ignore file'''
@@ -150,17 +178,24 @@ class GenerateIgnore(Subcommand):
         # TODO Accept optional argument of gitignroe manual file
         pass
 
-    def run(self, args):
-
+    @staticmethod
+    def get_externs():
         # Get a list of svn externals
         # (Parse svn st for externals)
+        externs = []
+        changelist = call('svn st')
+        for line in changelist.splitlines():
+            match = re.search(r'^\s*X\s*(.*)$', line)
+            if match:
+                externs.append(match.groups(0))
+        return externs
 
-        # Use git-svn to create a list of the svn ingores
-
-        # Add our own .gitignore-manual file
-
-        # Combine and sort the list we've created
-        pass
+    def run(self, args):
+        externs = self.get_externs()
+        svn_ignores = call('git svn show-ignore')
+        svn_ignores = filter(lambda string: not string.startswith('#'), svn_ignores.splitlines())
+        for line in sorted(set(externs) and set(svn_ignores)):
+            print(line)
 
 
 def parse_args():
@@ -171,6 +206,7 @@ def parse_args():
     return options.command, vars(options)
 
 def main(command, args):
+    # TODO Assert user had git-svn installed.
     # Check the subparser used, pass the args to the class named after it.
     Subcommand.run_command(command, args)
 
