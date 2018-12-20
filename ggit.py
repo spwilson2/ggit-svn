@@ -1,6 +1,7 @@
 import argparse
 import logging
 import pprint
+import tempfile
 import os
 import subprocess
 
@@ -18,10 +19,12 @@ class Cwd:
 
 
 def call(*args, **kwargs):
-    kwargs.setdefault('executable', 'bash')
-    kwargs.setdefault('shell', True)
+    if 'shell' not in kwargs:
+        kwargs.setdefault('executable', 'bash')
+        kwargs.setdefault('shell', True)
+
     pprint.pprint(('Call: ', args, kwargs))
-    subprocess.check_call(*args, **kwargs)
+    return subprocess.check_output(*args, **kwargs)
 
 
 class Subcommand(object):
@@ -65,12 +68,29 @@ class Clone(Subcommand):
         parser.add_argument('forward', nargs=argparse.REMAINDER)
 
     def run(self, args):
-        call('git clone'.split() + args['forward'], shell=False, executable=None)
+        # TODO Add support for cloning the svn
+
+        call('git clone'.split() + args['forward'], shell=False)
         with Cwd(dest):
             call('git show origin/git-svn-config:config >> .git/config')
             call('git fetch origin "refs/heads/svn/*:refs/remotes/rtosvc/svn/*"')
             # TODO Assert user had git-svn installed.
             call('git svn fetch rtosvc')
+            svn_url = call('git svn info --url')
+
+            # CHeckout svn to a temporary directory
+            # Copy over the .svn
+            # Update the svn repo
+            # Restore the 
+            tmpdir = tempfile.gettempdir()
+            checkout_cmd = 'svn co --depth=empty'.split() +
+                    [svn_url, tmpdir]
+            call(checkout_cmd, shell=False)
+            call('cp -r'.split() + [os.path.join(tmpdir, '.svn'), '.svn'], shell=False)
+            call('svn revert -R .')
+            call('svn update -R --depth=infinity')
+            call('git checkout --force')
+
 
 
 class Setup(Subcommand):
