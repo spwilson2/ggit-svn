@@ -4,6 +4,7 @@ import pprint
 import tempfile
 import os
 import subprocess
+import shutil
 
 class Cwd:
     def __init__(self, directory):
@@ -12,11 +13,19 @@ class Cwd:
     def __enter__(self):
         self._olddir = os.getcwd()
         os.chdir(self._dir)
+        return self
 
     def __exit__(self, *args):
         if hasattr(self,'_olddir'):
             os.chdir(self._olddir)
 
+class TemporaryDirectory(object):
+    def __enter__(self):
+        self.dir = tempfile.mkdtemp()
+        return self
+
+    def __exit__(self, *args):
+        shutil.rmtree(self.dir)
 
 def call(*args, **kwargs):
     if 'shell' not in kwargs:
@@ -65,30 +74,35 @@ class Clone(Subcommand):
     '''
 
     def init_parser(self, parser):
-        parser.add_argument('forward', nargs=argparse.REMAINDER)
+        parser.add_argument('remote')
+        parser.add_argument('destination')
+        #parser.add_argument('forward', nargs=argparse.REMAINDER)
 
     def run(self, args):
         # TODO Add support for cloning the svn
+        dest = args['destination']
 
-        call('git clone'.split() + args['forward'], shell=False)
+        call('git clone'.split() + [args['remote'], dest], shell=False)
         with Cwd(dest):
             call('git show origin/git-svn-config:config >> .git/config')
             call('git fetch origin "refs/heads/svn/*:refs/remotes/rtosvc/svn/*"')
             # TODO Assert user had git-svn installed.
             call('git svn fetch rtosvc')
             svn_url = call('git svn info --url')
+            svn_url = svn_url.rstrip()
 
-            # CHeckout svn to a temporary directory
+            # Checkout svn to a temporary directory
             # Copy over the .svn
             # Update the svn repo
-            # Restore the 
-            tmpdir = tempfile.gettempdir()
-            checkout_cmd = 'svn co --depth=empty'.split() +
-                    [svn_url, tmpdir]
-            call(checkout_cmd, shell=False)
-            call('cp -r'.split() + [os.path.join(tmpdir, '.svn'), '.svn'], shell=False)
-            call('svn revert -R .')
-            call('svn update -R --depth=infinity')
+            # Restore files updated with the svn revert metadata bs.
+            with TemporaryDirectory() as td:
+                checkout_cmd = 'svn co --depth=empty'.split() + \
+                        [svn_url, td.dir]
+                call(checkout_cmd, shell=False)
+                call('cp -r'.split() + [os.path.join(td.dir, '.svn'), '.svn'], shell=False)
+            call('svn revert -q -R .')
+            # TODO Update to same revision as the git branch.
+            call('svn update -q --force --accept theirs-full --set-depth=infinity')
             call('git checkout --force')
 
 
