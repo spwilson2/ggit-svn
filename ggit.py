@@ -21,7 +21,7 @@ def call(*args, **kwargs):
     kwargs.setdefault('executable', 'bash')
     kwargs.setdefault('shell', True)
     pprint.pprint(('Call: ', args, kwargs))
-    return subprocess.call(*args, **kwargs)
+    subprocess.check_call(*args, **kwargs)
 
 
 class Subcommand(object):
@@ -62,14 +62,10 @@ class Clone(Subcommand):
     '''
 
     def init_parser(self, parser):
-        pass
+        parser.add_argument('forward', nargs=argparse.REMAINDER)
 
     def run(self, args):
-        #remote = args['remote']
-        remote = 'http://landshark.ghs.com:8880/sean.wilson/rtosvc.git'
-        dest = 'rtosvc'
-
-        call('git clone %s' % remote)
+        call('git clone'.split() + args['forward'], shell=False, executable=None)
         with Cwd(dest):
             call('git show origin/git-svn-config:config >> .git/config')
             call('git fetch origin "refs/heads/svn/*:refs/remotes/rtosvc/svn/*"')
