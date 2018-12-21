@@ -37,6 +37,7 @@ class TemporaryDirectory(object):
 
 class EXIT_CODE:
     SAFTEY = 1
+    NO_SUCH_REF = 2
 
 
 class Git:
@@ -49,6 +50,37 @@ class Git:
     def svn_initialized():
         # TODO Check return val
         call('git svn info')
+
+    @staticmethod
+    def remote_has_ref(remote, ref):
+        try:
+            call('git ls-remote -q --exit-code {remote} {ref}'
+                    ''.format(remote=remote, ref=ref))
+        except subprocess.CalledProcessError:
+            return False
+        return True
+
+    @staticmethod
+    def configure_git_svn(remote, config_branch):
+        call('git show {remote}/{branch}:config >> .git/config'
+                .format(remote=remote, branch=config_branch))
+        call('git fetch {remote} "refs/heads/svn/*:refs/remotes/svn/*"'
+                .format(remote=remote))
+        call('git svn fetch')
+        svn_url = call('git svn info --url')
+        svn_url = svn_url.rstrip()
+
+        # Checkout svn to a temporary directory
+        # Copy over the .svn
+        # Update the svn repo
+        # Restore files updated with the svn revert metadata bs.
+        with TemporaryDirectory() as td:
+            shutil.rmtree('.svn')
+            call('svn co --depth=empty "{url}" "{tmpdir}"'
+                    .format(url=svn_url, tmpdir=td.dir))
+            call('cp -r "{tmpdir}/.svn" .svn'.format(tmpdir=td.dir))
+        rev = get_revision()
+        git_update(rev)
 
 
 def call(*args, **kwargs):
@@ -103,10 +135,21 @@ class Subcommand(object):
     def run(self, args):
         raise NotImplemented
 
+class Configure(Subcommand):
+
+    def init_parser(self, parser):
+        parser.add_argument('--config-branch', default='svn/CONFIG')
+        parser.add_argument('--remote', default='origin')
+
+    def run(self,args):
+        remote = args['remote']
+        conf_branch = args['config_branch']
+        Git.configure_git_svn(remote, conf_branch)
+
 
 class Clone(Subcommand):
     '''
-    Command used to clone an existing ggit repo. 
+    Command used to clone an existing ggit repo.
     (A mixed git-svn repository)
     '''
 
@@ -114,32 +157,21 @@ class Clone(Subcommand):
         parser.add_argument('remote')
         parser.add_argument('destination')
         parser.add_argument('--config-branch', default='svn/CONFIG')
-        #parser.add_argument('forward', nargs=argparse.REMAINDER)
 
     def run(self, args):
+        remote = args['remote']
         dest = args['destination']
-        conf_branch = args['config-branch']
+        conf_branch = args['config_branch']
 
-        call('git clone'.split() + [args['remote'], dest], shell=False)
+        # Verify remote has the config_branch
+        if not Git.remote_has_ref(remote, conf_branch):
+            print('Remote "{remote}" does not contain configuration reference'
+                ' "{ref}"'.format(remote=remote, ref=conf_branch))
+            return EXIT_CODE.NO_SUCH_REF
+
+        call('git clone'.split() + [remote, dest], shell=False)
         with Cwd(dest):
-            call('git show {branch}:config >> .git/config'
-                    ''.format(branch=conf_branch))
-            call('git fetch origin "refs/heads/svn/*:refs/remotes/rtosvc/svn/*"')
-            call('git svn fetch')
-            svn_url = call('git svn info --url')
-            svn_url = svn_url.rstrip()
-
-            # Checkout svn to a temporary directory
-            # Copy over the .svn
-            # Update the svn repo
-            # Restore files updated with the svn revert metadata bs.
-            checkout_cmd = 'svn co --depth=empty'.split() + [svn_url, td.dir]
-            copy_cmd = 'cp -r'.split() + [os.path.join(td.dir, '.svn'), '.svn']
-            with TemporaryDirectory() as td:
-                call(checkout_cmd, shell=False)
-                call(copy_cmd, shell=False)
-            rev = get_revision()
-            git_update(rev)
+            Git.configure_git_svn('origin', conf_branch)
 
         return EXIT_CODE.SUCESS
 
