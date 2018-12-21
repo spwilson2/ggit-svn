@@ -13,6 +13,9 @@ import sys
 import subprocess
 import textwrap
 
+GIT_CONFIG_FILE = 'config'
+
+
 class Cwd:
     def __init__(self, directory):
         self._dir = directory
@@ -34,6 +37,25 @@ class TemporaryDirectory(object):
     def __exit__(self, *args):
         shutil.rmtree(self.dir)
 
+class GitSvnConfig():
+    template = '''
+    [svn-remote "svn"]
+        url = {url}
+        {fetches}
+    '''
+    fetch_template = 'fetch = {remote_branch}:refs/remotes/svn/{branch}'
+
+    @classmethod
+    def fill_template(cls, url, fetches):
+
+        fetch_templates = []
+        for (remote_branch, branch) in fetches:
+            cls.fetch_templates.append(fetch_template.format(
+                remote_branch=remote_branch
+                branch=branch))
+
+        fetch_templates = '\n'.join(fetch_templates)
+        return cls.template.format(url=url, fetches=fetch_templates)
 
 class EXIT_CODE:
     SUCCESS = 0
@@ -145,7 +167,8 @@ class Subcommand(object):
     def init_parsers(cls, subparsers):
         subclasses = cls.__subclasses__()
         for subclass in subclasses:
-            subparser = subparsers.add_parser(subclass.__name__.lower())
+            subparser = subparsers.add_parser(subclass.__name__.lower(), 
+                    help=subclass.__doc__)
             subclass().init_parser(subparser)
 
     def init_parser(self, parser):
@@ -155,7 +178,12 @@ class Subcommand(object):
         raise NotImplemented
 
 class Configure(Subcommand):
+    '''
+    Configure the current repository as a ggit-svn repository.
 
+    This requries a config branch which contains metadata required to initialize
+    a mixed git and svn repository.
+    '''
     def init_parser(self, parser):
         parser.add_argument('--config-branch', default='svn/CONFIG')
         parser.add_argument('--remote', default='origin')
@@ -168,8 +196,7 @@ class Configure(Subcommand):
 
 class Clone(Subcommand):
     '''
-    Command used to clone an existing ggit repo.
-    (A mixed git-svn repository)
+    Clone a ggit repository. (A mixed git-svn, svn repo.)
     '''
 
     def init_parser(self, parser):
@@ -195,14 +222,48 @@ class Clone(Subcommand):
         return EXIT_CODE.SUCCESS
 
 
+# TODO 
 class Setup(Subcommand):
     '''
-    Command used to fetch and initialize a ggit repo from an svn path.
-    (Create a mixed git and svn repository from an svn path.)
+    Fetch and initialize a ggit repo from an svn path.
 
-    Also used to initialize a new repository on a bare head.
+    It's recommended to use this within a bare repo.
     '''
-    pass
+    def init_parser(self, parser):
+        parser.add_argument('--config-branch', default='svn/CONFIG')
+        parser.add_argument('-r', '--revision', default='0')
+        parser.add_argument('remote', nargs='+', 
+                help='E.g. branches/ap/trunk:aptrunk')
+
+    def _parse_remotes(self, remotes):
+        fetches = []
+        for item in remotes:
+            match = re.search('(.*):(.*)')
+            if not match:
+                raise ValueError('Argument incorrect format')
+            fetches.append((match.group(0), match.group(1)))
+        return fetches
+     
+
+    def run(self, args):
+        remotes = args['remote']
+        rev = args['revision']
+        conf_branch = args['config_branch']
+
+        fetches = self._parse_remotes(remotes)
+        config = GitSvnConfig.fill_template(remote, fetches)
+
+        # TODO Check if the config branch already exists
+
+        call('git checkout --orphan {branch}'.format(conf_branch))
+        call('git reset')
+        with open(GIT_CONFIG_FILE, 'w') as f:
+            f.write(config)
+        call('git add {config}'.format(config=GIT_CONFIG_FILE))
+        call('git commit -m "<ggit autocommit> Create config file"')
+
+        call('cat config >> .git/config')
+        call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
 
 
 class Switch(Subcommand):
