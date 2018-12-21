@@ -41,17 +41,18 @@ class GitSvnConfig():
     template = '''
     [svn-remote "svn"]
         url = {url}
-        {fetches}
+    {fetches}
     '''
-    fetch_template = 'fetch = {remote_branch}:refs/remotes/svn/{branch}'
+    template = textwrap.dedent(template)
+    fetch_template = '    fetch = {remote_branch}:refs/remotes/svn/{branch}\n'
 
     @classmethod
     def fill_template(cls, url, fetches):
 
         fetch_templates = []
         for (remote_branch, branch) in fetches:
-            cls.fetch_templates.append(fetch_template.format(
-                remote_branch=remote_branch
+            fetch_templates.append(cls.fetch_template.format(
+                remote_branch=remote_branch,
                 branch=branch))
 
         fetch_templates = '\n'.join(fetch_templates)
@@ -137,7 +138,7 @@ def get_revision():
     head_entry = head_entry.splitlines()
     match = re.search('r(\d*)', head_entry[1])
     assert match
-    revision = match.group(0)
+    revision = match.group(1)
     return revision
 
 def git_update(revision):
@@ -222,8 +223,7 @@ class Clone(Subcommand):
         return EXIT_CODE.SUCCESS
 
 
-# TODO 
-class Setup(Subcommand):
+class Initialize(Subcommand):
     '''
     Fetch and initialize a ggit repo from an svn path.
 
@@ -232,36 +232,37 @@ class Setup(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('--config-branch', default='svn/CONFIG')
         parser.add_argument('-r', '--revision', default='0')
-        parser.add_argument('remote', nargs='+', 
+        parser.add_argument('url')
+        parser.add_argument('remote', nargs='+',
                 help='E.g. branches/ap/trunk:aptrunk')
 
     def _parse_remotes(self, remotes):
         fetches = []
         for item in remotes:
-            match = re.search('(.*):(.*)')
+            match = re.search('(.*):(.*)', item)
             if not match:
                 raise ValueError('Argument incorrect format')
-            fetches.append((match.group(0), match.group(1)))
+            fetches.append((match.group(1), match.group(2)))
         return fetches
-     
 
     def run(self, args):
+        url = args['url']
         remotes = args['remote']
         rev = args['revision']
         conf_branch = args['config_branch']
 
         fetches = self._parse_remotes(remotes)
-        config = GitSvnConfig.fill_template(remote, fetches)
+        config = GitSvnConfig.fill_template(url, fetches)
 
         # TODO Check if the config branch already exists
 
-        call('git checkout --orphan {branch}'.format(conf_branch))
+        call('git checkout --orphan {branch}'.format(branch=conf_branch))
         call('git reset')
         with open(GIT_CONFIG_FILE, 'w') as f:
             f.write(config)
         call('git add {config}'.format(config=GIT_CONFIG_FILE))
         call('git commit -m "<ggit autocommit> Create config file"')
-
+        # TODO Create function to idempotently add to file
         call('cat config >> .git/config')
         call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
 
