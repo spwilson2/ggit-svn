@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import subprocess
+import textwrap
 
 class Cwd:
     def __init__(self, directory):
@@ -31,6 +32,13 @@ class TemporaryDirectory(object):
 
     def __exit__(self, *args):
         shutil.rmtree(self.dir)
+
+class Git:
+
+    @staticmethod
+    def is_dirty():
+        output = call('git status --porcelain')
+        return bool(output)
 
 def call(*args, **kwargs):
     if 'shell' not in kwargs:
@@ -94,17 +102,19 @@ class Clone(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('remote')
         parser.add_argument('destination')
+        parser.add_argument('--config-branch', default='svn/CONFIG')
         #parser.add_argument('forward', nargs=argparse.REMAINDER)
 
     def run(self, args):
-        # TODO Add support for cloning the svn
         dest = args['destination']
+        conf_branch = args['config-branch']
 
         call('git clone'.split() + [args['remote'], dest], shell=False)
         with Cwd(dest):
-            call('git show origin/git-svn-config:config >> .git/config')
+            call('git show {branch}:config >> .git/config'
+                    ''.format(branch=conf_branch))
             call('git fetch origin "refs/heads/svn/*:refs/remotes/rtosvc/svn/*"')
-            call('git svn fetch rtosvc')
+            call('git svn fetch')
             svn_url = call('git svn info --url')
             svn_url = svn_url.rstrip()
 
@@ -112,11 +122,11 @@ class Clone(Subcommand):
             # Copy over the .svn
             # Update the svn repo
             # Restore files updated with the svn revert metadata bs.
+            checkout_cmd = 'svn co --depth=empty'.split() + [svn_url, td.dir]
+            copy_cmd = 'cp -r'.split() + [os.path.join(td.dir, '.svn'), '.svn']
             with TemporaryDirectory() as td:
-                checkout_cmd = 'svn co --depth=empty'.split() + \
-                        [svn_url, td.dir]
                 call(checkout_cmd, shell=False)
-                call('cp -r'.split() + [os.path.join(td.dir, '.svn'), '.svn'], shell=False)
+                call(copy_cmd, shell=False)
             rev = get_revision()
             git_update(rev)
 
@@ -136,7 +146,32 @@ class Switch(Subcommand):
     Change branches and update the hidden svn repository to match the branch's
     svn revision.
     '''
-    pass
+    def init_parser(self, parser):
+        parser.add_argument('-F', '--force', default=False, action='store_true')
+        parser.add_argument('branch')
+        pass
+
+    def run(self, args):
+        force = args['force']
+        branch = args['branch']
+
+        if not force:
+            if Git.is_dirty():
+                print(textwrap.dedent(
+                    '''
+                    Refusing to change branches, working directory is dirty.
+                    Consider stashing changes:
+
+                        git stash
+                    '''
+                    ))
+                raise Excpetion('Working directory is dirty. Re')
+            # TODO Check if the working directory is dirty or has untracked files,
+            # if so fail unless force provided.
+            pass
+
+        call('git checkout "{branch}" --'.format(branch=branch))
+        Sync().run(None)
 
 
 class Rebase(Subcommand):
@@ -148,7 +183,7 @@ class Rebase(Subcommand):
 
     def run(self, args):
         call('git svn rebase')
-        Update().run(args)
+        Sync().run(args)
 
 
 class Pull(Subcommand):
@@ -160,9 +195,9 @@ class Pull(Subcommand):
         Rebase().run(args)
 
 
-class Update(Subcommand):
+class Sync(Subcommand):
     '''
-    Update .svn to the current branch's svn revision and branch.
+    Synchronize the .svn to the current branch's svn revision and branch.
     '''
     def init_parser(self, parser):
         pass
