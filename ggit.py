@@ -1,4 +1,5 @@
 #!/usr/bin/python
+from __future__ import print_function
 
 import argparse
 import itertools
@@ -33,12 +34,22 @@ class TemporaryDirectory(object):
     def __exit__(self, *args):
         shutil.rmtree(self.dir)
 
-class Git:
 
+class EXIT_CODE:
+    SAFTEY = 1
+
+
+class Git:
     @staticmethod
     def is_dirty():
         output = call('git status --porcelain')
         return bool(output)
+
+    @staticmethod
+    def svn_initialized():
+        # TODO Check return val
+        call('git svn info')
+
 
 def call(*args, **kwargs):
     if 'shell' not in kwargs:
@@ -130,6 +141,8 @@ class Clone(Subcommand):
             rev = get_revision()
             git_update(rev)
 
+        return EXIT_CODE.SUCESS
+
 
 class Setup(Subcommand):
     '''
@@ -161,17 +174,17 @@ class Switch(Subcommand):
                     '''
                     Refusing to change branches, working directory is dirty.
                     Consider stashing changes:
-
                         git stash
                     '''
                     ))
-                raise Excpetion('Working directory is dirty. Re')
+                return EXIT_CODE.SAFTEY
             # TODO Check if the working directory is dirty or has untracked files,
             # if so fail unless force provided.
             pass
 
         call('git checkout "{branch}" --'.format(branch=branch))
         Sync().run(None)
+        return EXIT_CODE.SUCESS
 
 
 class Rebase(Subcommand):
@@ -184,6 +197,7 @@ class Rebase(Subcommand):
     def run(self, args):
         call('git svn rebase')
         Sync().run(args)
+        return EXIT_CODE.SUCESS
 
 
 class Pull(Subcommand):
@@ -193,6 +207,7 @@ class Pull(Subcommand):
     def run(self, args):
         call('git svn fetch')
         Rebase().run(args)
+        return EXIT_CODE.SUCESS
 
 
 class Sync(Subcommand):
@@ -205,6 +220,8 @@ class Sync(Subcommand):
     def run(self, args):
         rev = get_revision()
         git_update(rev)
+        return EXIT_CODE.SUCESS
+
 
 class GenerateIgnore(Subcommand):
     '''Generate an ignore file'''
@@ -231,6 +248,7 @@ class GenerateIgnore(Subcommand):
         svn_ignores = filter(lambda string: not string.startswith('#'), svn_ignores.splitlines())
         for line in sorted(set(externs) and set(svn_ignores)):
             print(line)
+        return EXIT_CODE.SUCESS
 
 
 def parse_args():
@@ -243,8 +261,8 @@ def parse_args():
 def main(command, args):
     # TODO Assert user had git-svn installed.
     # Check the subparser used, pass the args to the class named after it.
-    Subcommand.run_command(command, args)
+    return Subcommand.run_command(command, args)
 
 if __name__ == '__main__':
     parsed = parse_args()
-    main(*parsed)
+    sys.exit(main(*parsed))
