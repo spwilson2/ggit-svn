@@ -36,6 +36,7 @@ class TemporaryDirectory(object):
 
 
 class EXIT_CODE:
+    SUCCESS = 0
     SAFTEY = 1
     NO_SUCH_REF = 2
 
@@ -43,8 +44,14 @@ class EXIT_CODE:
 class Git:
     @staticmethod
     def is_dirty():
-        output = call('git status --porcelain')
+        output = call('git status -uno -s')
         return bool(output)
+
+    @staticmethod
+    def svn_url():
+        svn_url = call('git svn info --url')
+        svn_url = svn_url.rstrip()
+        return svn_url
 
     @staticmethod
     def svn_initialized():
@@ -67,8 +74,7 @@ class Git:
         call('git fetch {remote} "refs/heads/svn/*:refs/remotes/svn/*"'
                 .format(remote=remote))
         call('git svn fetch')
-        svn_url = call('git svn info --url')
-        svn_url = svn_url.rstrip()
+        svn_url = Git.svn_url()
 
         # Checkout svn to a temporary directory
         # Copy over the .svn
@@ -81,6 +87,19 @@ class Git:
             call('cp -r "{tmpdir}/.svn" .svn'.format(tmpdir=td.dir))
         rev = get_revision()
         git_update(rev)
+
+    @staticmethod
+    def enforce_clean():
+        if Git.is_dirty():
+            print(textwrap.dedent(
+                '''
+                Refusing to change branches, working directory is dirty.
+                Consider stashing changes:
+                    git stash
+                '''
+                ))
+            return False
+        return True
 
 
 def call(*args, **kwargs):
@@ -173,7 +192,7 @@ class Clone(Subcommand):
         with Cwd(dest):
             Git.configure_git_svn('origin', conf_branch)
 
-        return EXIT_CODE.SUCESS
+        return EXIT_CODE.SUCCESS
 
 
 class Setup(Subcommand):
@@ -200,23 +219,12 @@ class Switch(Subcommand):
         force = args['force']
         branch = args['branch']
 
-        if not force:
-            if Git.is_dirty():
-                print(textwrap.dedent(
-                    '''
-                    Refusing to change branches, working directory is dirty.
-                    Consider stashing changes:
-                        git stash
-                    '''
-                    ))
-                return EXIT_CODE.SAFTEY
-            # TODO Check if the working directory is dirty or has untracked files,
-            # if so fail unless force provided.
-            pass
+        if not force and not Git.enforce_clean():
+            return EXIT_CODE.SAFTEY
 
         call('git checkout "{branch}" --'.format(branch=branch))
         Sync().run(None)
-        return EXIT_CODE.SUCESS
+        return EXIT_CODE.SUCCESS
 
 
 class Rebase(Subcommand):
@@ -229,7 +237,7 @@ class Rebase(Subcommand):
     def run(self, args):
         call('git svn rebase')
         Sync().run(args)
-        return EXIT_CODE.SUCESS
+        return EXIT_CODE.SUCCESS
 
 
 class Pull(Subcommand):
@@ -239,7 +247,7 @@ class Pull(Subcommand):
     def run(self, args):
         call('git svn fetch')
         Rebase().run(args)
-        return EXIT_CODE.SUCESS
+        return EXIT_CODE.SUCCESS
 
 
 class Sync(Subcommand):
@@ -247,12 +255,19 @@ class Sync(Subcommand):
     Synchronize the .svn to the current branch's svn revision and branch.
     '''
     def init_parser(self, parser):
-        pass
+        parser.add_argument('-F', '--force', default=False, action='store_true')
 
     def run(self, args):
+        force = args['force']
+
+        if not force and not Git.enforce_clean():
+            return EXIT_CODE.SAFTEY
+
+        svn_url = Git.svn_url()
+        call('svn switch --force {url}'.format(url=svn_url))
         rev = get_revision()
         git_update(rev)
-        return EXIT_CODE.SUCESS
+        return EXIT_CODE.SUCCESS
 
 
 class GenerateIgnore(Subcommand):
@@ -280,7 +295,7 @@ class GenerateIgnore(Subcommand):
         svn_ignores = filter(lambda string: not string.startswith('#'), svn_ignores.splitlines())
         for line in sorted(set(externs) and set(svn_ignores)):
             print(line)
-        return EXIT_CODE.SUCESS
+        return EXIT_CODE.SUCCESS
 
 
 def parse_args():
