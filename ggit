@@ -14,6 +14,8 @@ import subprocess
 import textwrap
 
 GIT_CONFIG_FILE = 'config'
+GGIT_FOLDER = 'git-svn'
+GGIT_CONFIG_BRANCH = '%s/CONFIG' % GGIT_FOLDER
 
 
 class Cwd:
@@ -44,7 +46,8 @@ class GitSvnConfig():
     {fetches}
     '''
     template = textwrap.dedent(template)
-    fetch_template = '    fetch = {remote_branch}:refs/remotes/svn/git-svn/{branch}\n'
+    fetch_template = ('    fetch = {remote_branch}:'
+            'refs/remotes/svn/{folder}/{branch}')
 
     @classmethod
     def fill_template(cls, url, fetches):
@@ -55,7 +58,8 @@ class GitSvnConfig():
                 branch=branch))
 
         fetch_templates = '\n'.join(fetch_templates)
-        return cls.template.format(url=url, fetches=fetch_templates)
+        return cls.template.format(url=url, folder=GGIT_FOLDER, 
+                fetches=fetch_templates)
 
 class EXIT_CODE:
     SUCCESS = 0
@@ -75,7 +79,7 @@ def create_dotsvn(svn_url):
 
 class Git:
     @staticmethod
-    def is_repo_missing():
+    def in_a_repo():
         try:
             output = call('git rev-parse --show-toplevel')
         except subprocess.CalledProcessError:
@@ -83,6 +87,9 @@ class Git:
             # search path.
             return 'Not a git repository'
         return None
+
+    @staticmethod
+    def is_repo_missing():
 
     @staticmethod
     def is_dirty():
@@ -115,8 +122,9 @@ class Git:
             exclude.write('.svn\n')
         call('git show {remote}/{branch}:config >> .git/config'
                 .format(remote=remote, branch=config_branch))
-        call('git fetch {remote} "refs/heads/git-svn/*:refs/remotes/svn/git-svn/*"'
-                .format(remote=remote))
+        call('git fetch {remote} "refs/heads/{folder}/*:'
+                'refs/remotes/svn/{folder}/*"'
+                .format(folder=GGIT_FOLDER, remote=remote))
         call('git svn fetch')
         svn_url = Git.svn_url()
 
@@ -129,13 +137,6 @@ class Git:
         rev = Git.get_revision()
         git_update(rev)
 
-    @staticmethod
-    def get_revision():
-        info = call('git svn info')
-        match = re.search('Revision: (\d+)', info)
-        assert match
-        rev = match.group(1)
-        return rev
 
     @staticmethod
     def enforce_clean():
@@ -159,11 +160,6 @@ def call(*args, **kwargs):
     pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
     return subprocess.check_output(*args, **kwargs)
 
-def git_update(revision):
-    call('svn update -q --force --accept working --set-depth=infinity -r %s'
-            % revision)
-    call('svn revert -q -R .')
-    call('git checkout --force')
 
 class Subcommand(object):
 
@@ -196,50 +192,6 @@ class Subcommand(object):
     def run(self, args):
         raise NotImplemented
 
-class Configure(Subcommand):
-    '''
-    Configure the current repository as a ggit-svn repository.
-
-    This requries a config branch which contains metadata required to initialize
-    a mixed git and svn repository.
-    '''
-    def init_parser(self, parser):
-        parser.add_argument('--config-branch', default='svn/CONFIG')
-        parser.add_argument('--remote', default='origin')
-
-    def run(self,args):
-        remote = args['remote']
-        conf_branch = args['config_branch']
-        Git.configure_git_svn(remote, conf_branch)
-
-
-class Clone(Subcommand):
-    '''
-    Clone a ggit repository. (A mixed git-svn, svn repo.)
-    '''
-
-    def init_parser(self, parser):
-        parser.add_argument('remote')
-        parser.add_argument('destination')
-        parser.add_argument('--config-branch', default='svn/CONFIG')
-
-    def run(self, args):
-        remote = args['remote']
-        dest = args['destination']
-        conf_branch = args['config_branch']
-
-        # Verify remote has the config_branch
-        if not Git.remote_has_ref(remote, conf_branch):
-            print('Remote "{remote}" does not contain configuration reference'
-                ' "{ref}"'.format(remote=remote, ref=conf_branch))
-            return EXIT_CODE.NO_SUCH_REF
-
-        call('git clone --no-checkout'.split() + [remote, dest], shell=False)
-        with Cwd(dest):
-            Git.configure_git_svn('origin', conf_branch)
-
-        return EXIT_CODE.SUCCESS
-
 
 class Initialize(Subcommand):
     '''
@@ -248,10 +200,10 @@ class Initialize(Subcommand):
     It's recommended to use this within a bare repo.
     '''
     def init_parser(self, parser):
-        parser.add_argument('--config-branch', default='svn/CONFIG')
+        parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
         parser.add_argument('-r', '--revision', default='0')
         parser.add_argument('url')
-        parser.add_argument('remote', nargs='+',
+        parser.add_argument('remote-names', nargs='+',
                 help='E.g. branches/ap/trunk:aptrunk')
 
     def _parse_remotes(self, remotes):
@@ -264,8 +216,12 @@ class Initialize(Subcommand):
         return fetches
 
     def run(self, args):
+        err = Git.is_repo_missing()
+        if err is not None:
+            return EXIT_CODE.NOT_A_REPOSITORY
+
         url = args['url']
-        remotes = args['remote']
+        remotes = args['remote-names']
         rev = args['revision']
         conf_branch = args['config_branch']
 
@@ -283,85 +239,6 @@ class Initialize(Subcommand):
         # TODO Create function to idempotently add to file
         call('cat config >> .git/config')
         call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
-
-
-class Switch(Subcommand):
-    '''
-    Change branches and update the hidden svn repository to match the branch's
-    svn revision.
-    '''
-    def init_parser(self, parser):
-        parser.add_argument('-F', '--force', default=False, action='store_true')
-        parser.add_argument('branch')
-        pass
-
-    def run(self, args):
-        force = args['force']
-        branch = args['branch']
-
-        err = Git.is_repo_missing()
-        if err is not None:
-            return EXIT_CODE.NOT_A_REPOSITORY
-
-        if not force and not Git.enforce_clean():
-            return EXIT_CODE.SAFTEY
-
-        # TODO Use the svn revision
-        call('git checkout --detach')
-        call('git reset --soft {branch}'.format(branch=branch))
-        rev = Git.get_revision()
-
-        # We have to recreate the .svn folder because 'svn switch' is buggy when
-        # it comes to changing svn:externals.
-        svn_url = Git.svn_url()
-        create_dotsvn(svn_url)
-        rev = Git.get_revision()
-        git_update(rev)
-        call('git checkout {branch} --force --'.format(branch=branch))
-        return EXIT_CODE.SUCCESS
-
-
-class Rebase(Subcommand):
-    '''
-    Rebase the current branch on top of a the latest fetched git-svn.
-    '''
-    def init_parser(self, parser):
-        pass
-
-    def run(self, args):
-        call('git svn rebase')
-        Sync().run(args)
-        return EXIT_CODE.SUCCESS
-
-
-class Pull(Subcommand):
-    '''
-    Fetch the latest svn changes and rebase the current branch on top of them.
-    '''
-    def run(self, args):
-        call('git svn fetch')
-        Rebase().run(args)
-        return EXIT_CODE.SUCCESS
-
-
-class Sync(Subcommand):
-    '''
-    Synchronize the .svn to the current branch's svn revision and branch.
-    '''
-    def init_parser(self, parser):
-        parser.add_argument('-F', '--force', default=False, action='store_true')
-
-    def run(self, args):
-        force = args['force']
-
-        if not force and not Git.enforce_clean():
-            return EXIT_CODE.SAFTEY
-
-        svn_url = Git.svn_url()
-        call('svn switch --force {url}'.format(url=svn_url))
-        rev = Git.get_revision()
-        git_update(rev)
-        return EXIT_CODE.SUCCESS
 
 
 class GenerateIgnore(Subcommand):
@@ -391,6 +268,237 @@ class GenerateIgnore(Subcommand):
             print(line)
         return EXIT_CODE.SUCCESS
 
+
+
+
+# New version
+
+
+
+class Git:
+    @staticmethod
+    def in_a_repo():
+        try:
+            output = check_output('git rev-parse --show-toplevel')
+        except subprocess.CalledProcessError:
+            # TODO Save the git stderr, it has useful information about the search path.
+            return 'Not a git repository'
+        return None
+
+    @staticmethod
+    def most_recent_svn_commit(hashish):
+        '''
+        Check the git log for the latest git-svn log entry. Return a GitSvnLogEntry
+        object for the entry. If no such entry is found return None. 
+        '''
+        #
+        # Use git log, search through the output for the most recent git-svn log
+        # message.
+        #
+        # Return the metadata.
+        return None
+        return GitSvnConfig()
+
+
+class GitSvnLogEntry:
+    # git-svn-id: http://rtosvc/trunk/rtos@274190 d5d84855-3516-0410-9f1e-893281b4b339
+    SVN_ENTRY_REGEX = re.compile(
+            r'git-svn-id: (?P<url>([^@]+)@(?P<rev>\d+)'
+            r' (?P<svn_uuid>[0-9a-z\-]+)')
+
+    # commit 3505cb1adc010f7dcf18247846fe09d7353acb9c
+    GIT_ENTRY_REGEX = re.compile('commit (?P<hash>[0-9a-z]+)')
+
+    def __init__(self, url, rev, git_uuid, svn_uuid):
+        self.url = url
+        self.revision = rev
+        self.git_hash = git_uuid
+        self.git_svn_hash = svn_uuid
+
+    @classmethod
+    def find_entry(cls, line_iter):
+        # Keep a running log of git hashes,
+        # Since git hashes are before git-svn entries, once we find a git-svn
+        # entry the most recent git hash goes with the svn entry.  
+        for line in line_iter:
+            git_match = cls.GIT_ENTRY_REGEX.match(line)
+            svn_match = cls.SVN_ENTRY_REGEX.match(line)
+            if git_match:
+                git_uuid = git_match.groups(1)
+            if svn_match:
+                match = svn_match.groupsdict()
+                match['git_uuid'] = git_uuid
+                return GitSvnLogEntry(**match)
+        return None
+
+
+class GGitConfig():
+    def __init__(self):
+        pass
+
+    @classmethod
+    def from_branch(cls):
+        # Use `git show` to read the ggit-config file from the prefered branch.
+        return GGitConfig()
+
+    @classmethod
+    def from_dot_git(cls):
+        return GGitConfig()
+
+    def url_to_branch(self, url):
+        # Given the url, covert it to a branch.
+        pass
+
+    def switch_svn(self, url, rev):
+        # Replace the symlink .svn with one in .git/ggit/
+        # Run svn update to set the revision and depth.
+        # Run svn revert to clean to a known svn state.
+        pass
+
+    def setup_ggit(self):
+        # Create a .git/ggit/ folder. 
+        #   (Backup the previous contents if it exists.)
+        # Add .svn to the .git/info/exclude folder.
+        pass
+
+    def setup_git_svn(self):
+        # Setup the .git/config fetches based on ggit-config file
+        #   (Possibly replacing old version. Use a begin and end statement to mark for
+        #   easy scripting.)
+        # Run git svn fetch
+        pass
+
+    def setup_empty_svn(self):
+        # Prepare the --depth=empty .svn folders within the .git/ggit/ folder
+        pass
+
+
+GGIT_CONFIG_BRANCH =  'ggit-config'
+
+# CLONE
+def run(args):
+    repository = args['repository']
+    directory = args['directory'] # optional
+
+    def git_basename(repository):
+        base = os.path.basename(respository)
+        return re.sub(r'.git$', '', base)
+    #TODO Attach to class.
+    NON_GIT_HEAD =  textwrap.dedent('''
+            The HEAD is not pointing to a git-svn branch.
+            In order to setup the correct .svn, switch branches with ggit. E.g:
+
+                ggit switch <branch-name>
+            ''')
+
+    # Check that the remote has the ggit-config branch.
+    check_call('git ls-remote -q --exit-code {remote} {ref}'
+            .format(remote=remote, ref=ref))
+
+    # If no local folder name provided, use git's naming scheme.
+    directory = git_basename(repository) if directory is None
+    if os.path.exists(directory):
+        return Status.PathExists
+
+    check_call('git clone {repo} {directory}'
+            .format(repo=repository, directory=directory))
+
+
+    with CWD(directory):
+        # RUN CONFIGURE
+        config = Configure()
+
+        # Create local branches for all remote git-svn branches.
+        check_call('git fetch origin'
+                ' refs/remotes/origin/git-svn/*'
+                ':refs/heads/git-svn/*')
+
+
+# SWITCH
+def run(args):
+    force = args['force']
+    hashish = args['hashish']
+    # Check that we are in a git repo.
+    if not Git.in_a_repo():
+        return Status.NotInRepo
+
+    # Check that the working directory is clean.
+    if not Git.is_clean() and not force:
+        return Status.RepoIsDirty
+
+    log_entry = Git.latest_svn_commit(hashish)
+
+    # Check the .git/ggit/config file for the remote to .svn mapping.
+    config = GGitConfig()
+    config.setup_svn(log_entry.url, log_entry.revision)
+
+    # Run git checkout to complete.
+    check_call('git checkout ' + hashish)
+
+
+# CONFIGURE
+class Config(Subcommand):
+
+    def init_parser
+    def run(self, args):
+        '''
+        Read from the ggit-config branch and configure the git repository to match.
+        '''
+        # Check that we are in a git repo.
+        if not Git.in_a_repo():
+            return Status.NotInRepo
+
+        # Check that the ggit-config branch exists locally or as a remote by looking
+        #   in .git/refs/heads and .git/refs/remotes, if not local, but in multiple
+        #   remotes fail.
+        def find_config_branch():
+            root = Git.toplevel()
+            assert root
+
+            matches = []
+            for root, dirs, files in os.walk(os.path.join(root, '.git', 'refs')):
+                for f in files:
+                    name = os.path.basename(f)
+                    if name == GGIT_CONFIG_BRANCH:
+                        matches.append(root)
+
+            local_config_branch = 'refs/heads' + GGIT_CONFIG_BRANCH
+
+            if local_config_branch in matches:
+                return local_config_branch
+            if len(matches) > 1
+                return Status.AmbiguousReference
+            return matches[0]
+
+        branch = find_config_branch()
+        config = GGitConfig.from_branch(branch)
+
+        # Create a .git/ggit/ folder. 
+        #   (Backup the previous contents if it exists.)
+        # Add .svn to the .git/info/exclude folder.
+        config.setup_ggit()
+
+        # Setup the .git/config fetches based on ggit-config file
+        #   (Possibly replacing old version. Use a begin and end statement to mark for
+        #   easy scripting.)
+        # Run git svn fetch
+        config.setup_git_svn()
+
+        # Prepare the --depth=empty .svn folders within the .git/ggit/ folder
+        config.setup_empty_svn()
+
+        # Check if the current HEAD is a git svn branch. 
+        log_entry = most_recent_svn_commit()
+        if log_entry is None:
+            print(NON_GIT_HEAD)
+            return
+        else:
+            config.switch_svn(log_entry.url, log_entry.revision)
+
+
+# TODO Command to create a gcrucible diff
+# TODO Command to initialize a new repository with svn url and branches. (REQ)
+# TODO Command to automate updating a repository with git-svn data (REQ)
 
 def parse_args():
     parser = argparse.ArgumentParser(prog='ggit')
