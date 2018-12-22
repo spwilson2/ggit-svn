@@ -44,11 +44,10 @@ class GitSvnConfig():
     {fetches}
     '''
     template = textwrap.dedent(template)
-    fetch_template = '    fetch = {remote_branch}:refs/remotes/svn/{branch}\n'
+    fetch_template = '    fetch = {remote_branch}:refs/remotes/svn/git-svn/{branch}\n'
 
     @classmethod
     def fill_template(cls, url, fetches):
-
         fetch_templates = []
         for (remote_branch, branch) in fetches:
             fetch_templates.append(cls.fetch_template.format(
@@ -62,12 +61,32 @@ class EXIT_CODE:
     SUCCESS = 0
     SAFTEY = 1
     NO_SUCH_REF = 2
+    NOT_A_REPOSITORY = 3
 
+def create_dotsvn(svn_url):
+    with TemporaryDirectory() as td:
+        try:
+            shutil.rmtree('.svn')
+        except OSError:
+            pass
+        call('svn co --depth=empty "{url}" "{tmpdir}"'
+                .format(url=svn_url, tmpdir=td.dir))
+        call('cp -r "{tmpdir}/.svn" .svn'.format(tmpdir=td.dir))
 
 class Git:
     @staticmethod
+    def is_repo_missing():
+        try:
+            output = call('git rev-parse --show-toplevel')
+        except subprocess.CalledProcessError:
+            # TODO Save of the git stderr, it has useful information about the
+            # search path.
+            return 'Not a git repository'
+        return None
+
+    @staticmethod
     def is_dirty():
-        output = call('git status -uno -s')
+        output = call('git status --porcelain')
         return bool(output)
 
     @staticmethod
@@ -92,24 +111,31 @@ class Git:
 
     @staticmethod
     def configure_git_svn(remote, config_branch):
+        with open('.git/info/exclude', 'w+') as exclude:
+            exclude.write('.svn\n')
         call('git show {remote}/{branch}:config >> .git/config'
                 .format(remote=remote, branch=config_branch))
-        call('git fetch {remote} "refs/heads/svn/*:refs/remotes/svn/*"'
+        call('git fetch {remote} "refs/heads/git-svn/*:refs/remotes/svn/git-svn/*"'
                 .format(remote=remote))
         call('git svn fetch')
         svn_url = Git.svn_url()
 
+        # Clean up old .svn cache if exists
         # Checkout svn to a temporary directory
         # Copy over the .svn
         # Update the svn repo
         # Restore files updated with the svn revert metadata bs.
-        with TemporaryDirectory() as td:
-            shutil.rmtree('.svn')
-            call('svn co --depth=empty "{url}" "{tmpdir}"'
-                    .format(url=svn_url, tmpdir=td.dir))
-            call('cp -r "{tmpdir}/.svn" .svn'.format(tmpdir=td.dir))
-        rev = get_revision()
+        create_dotsvn(svn_url)
+        rev = Git.get_revision()
         git_update(rev)
+
+    @staticmethod
+    def get_revision():
+        info = call('git svn info')
+        match = re.search('Revision: (\d+)', info)
+        assert match
+        rev = match.group(1)
+        return rev
 
     @staticmethod
     def enforce_clean():
@@ -118,7 +144,7 @@ class Git:
                 '''
                 Refusing to change branches, working directory is dirty.
                 Consider stashing changes:
-                    git stash
+                    git stash --include-untracked
                 '''
                 ))
             return False
@@ -133,18 +159,10 @@ def call(*args, **kwargs):
     pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
     return subprocess.check_output(*args, **kwargs)
 
-def get_revision():
-    head_entry = call('git svn log --limit 1')
-    head_entry = head_entry.splitlines()
-    match = re.search('r(\d*)', head_entry[1])
-    assert match
-    revision = match.group(1)
-    return revision
-
 def git_update(revision):
-    call('svn revert -q -R .')
-    call('svn update -q --force --accept theirs-full --set-depth=infinity -r %s'
+    call('svn update -q --force --accept working --set-depth=infinity -r %s'
             % revision)
+    call('svn revert -q -R .')
     call('git checkout --force')
 
 class Subcommand(object):
@@ -216,7 +234,7 @@ class Clone(Subcommand):
                 ' "{ref}"'.format(remote=remote, ref=conf_branch))
             return EXIT_CODE.NO_SUCH_REF
 
-        call('git clone'.split() + [remote, dest], shell=False)
+        call('git clone --no-checkout'.split() + [remote, dest], shell=False)
         with Cwd(dest):
             Git.configure_git_svn('origin', conf_branch)
 
@@ -281,11 +299,25 @@ class Switch(Subcommand):
         force = args['force']
         branch = args['branch']
 
+        err = Git.is_repo_missing()
+        if err is not None:
+            return EXIT_CODE.NOT_A_REPOSITORY
+
         if not force and not Git.enforce_clean():
             return EXIT_CODE.SAFTEY
 
-        call('git checkout "{branch}" --'.format(branch=branch))
-        Sync().run(None)
+        # TODO Use the svn revision
+        call('git checkout --detach')
+        call('git reset --soft {branch}'.format(branch=branch))
+        rev = Git.get_revision()
+
+        # We have to recreate the .svn folder because 'svn switch' is buggy when
+        # it comes to changing svn:externals.
+        svn_url = Git.svn_url()
+        create_dotsvn(svn_url)
+        rev = Git.get_revision()
+        git_update(rev)
+        call('git checkout {branch} --force --'.format(branch=branch))
         return EXIT_CODE.SUCCESS
 
 
@@ -327,7 +359,7 @@ class Sync(Subcommand):
 
         svn_url = Git.svn_url()
         call('svn switch --force {url}'.format(url=svn_url))
-        rev = get_revision()
+        rev = Git.get_revision()
         git_update(rev)
         return EXIT_CODE.SUCCESS
 
