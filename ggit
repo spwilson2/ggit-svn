@@ -2,11 +2,11 @@
 from __future__ import print_function
 
 import argparse
-import ConfigParser
 import io
 import itertools
 import logging
 import pprint
+import threading
 import tempfile
 import os
 import re
@@ -15,10 +15,19 @@ import sys
 import subprocess
 import textwrap
 
+VERSION = 0
+
 GIT_CONFIG_FILE = 'config'
 GGIT_FOLDER = 'git-svn'
 GGIT_CONFIG_BRANCH =  'ggit-config'
 
+python_version = sys.version_info
+python_version = python_version[0]
+
+if python_version <= 2:
+    import ConfigParser as configparser
+else:
+    import configparser
 
 class Chdir:
     def __init__(self, directory):
@@ -32,6 +41,19 @@ class Chdir:
     def __exit__(self, *args):
         if hasattr(self,'_olddir'):
             os.chdir(self._olddir)
+
+class Status:
+    NoConfigBranch = 1
+    NotInRepo = 2
+    PathExists = 3
+    RepoIsDirty = 4
+    AmbiguousReference = 5
+
+    def __init__(self, status, msg=None):
+        self.val = status
+        self.msg = msg
+
+OK = Status(None)
 
 
 class TemporaryDirectory(object):
@@ -72,8 +94,8 @@ class Git:
         try:
             check_output('git rev-parse --show-toplevel')
         except subprocess.CalledProcessError as e:
-            return e.output
-        return None
+            return Status(Status.NotInRepo, e.msg)
+        return OK
 
     @staticmethod
     def enforce_clean():
@@ -91,18 +113,35 @@ class Git:
         return True
 
     @staticmethod
-    def most_recent_svn_commit(hashish):
+    def latest_svn_commit(hashish):
         '''
         Check the git log for the latest git-svn log entry. Return a GitSvnLogEntry
         object for the entry. If no such entry is found return None. 
         '''
-        #
-        # Use git log, search through the output for the most recent git-svn log
-        # message.
-        #
-        # Return the metadata.
-        return None
-        return GitSvnConfig()
+        kwargs = { 
+                'stdout': subprocess.PIPE,
+                'stderr': None,
+        }
+
+        if python_version > 2:
+                kwargs['universal_newlines'] = True
+
+        git = subprocess.Popen(('git log %s' % hashish).split(), **kwargs)
+        entry = None
+
+        def get_entry(line_iter):
+            global entry
+            entry = GitSvnLogEntry.find_entry(line_iter)
+
+        line_iter = iter(git.stdout.readline, '')
+        thread = threading.Thread(target=get_entry, args=(line_iter,))
+        thread.start()
+
+        git.communicate()
+        thread.join()
+
+        # Thread is complete, we can touch entry without racing.
+        return entry
 
     @staticmethod
     def toplevel():
@@ -143,7 +182,6 @@ class GitSvnConfig():
 
 
 class Subcommand(object):
-
     @classmethod
     def _map_subcommand(cls, command):
         commands = {}
@@ -302,7 +340,7 @@ class GGitConfig():
 
     @classmethod
     def from_str(cls, string):
-        parser = ConfigParser.SafeConfigParser()
+        parser = configparser.SafeConfigParser()
         fp = io.BytesIO(string)
         parser.readfp(fp)
         sections = parser.sections()
@@ -337,6 +375,20 @@ class GGitConfig():
             config = f.read()
         return cls.from_str(config)
 
+    def write(self, pathname):
+        '''Write the config object to the given file pathname.'''
+        parser = ConfigParser.ConfigParser()
+        parser.add_section('base')
+        parser.set('base', 'url', self.url)
+
+        for branch, path in self.branches.items():
+            section = 'branch.' + branch
+            parser.add_section(section)
+            parser.set(section, 'path', path)
+
+        with open(pathname, 'w') as f:
+            parser.write(f)
+
     def url_to_branch(self, url):
         '''Given the url, convert it to a branch.'''
         for branch, path  in self.branches.items():
@@ -352,6 +404,11 @@ class GGitConfig():
     def get_ggit_path(self):
         git = Git.dot_git()
         return os.path.join(git, 'ggit')
+
+    @staticmethod
+    def get_config_path(self):
+        git = Git.dot_git()
+        return os.path.join(git, 'ggit', 'config')
 
     def switch_svn(self, url, rev):
         branch = self.url_to_bramch(url)
@@ -383,23 +440,78 @@ class GGitConfig():
                 shutil.move(f, backup_dir)
 
     def setup_ggit(self):
-        git = Git.dot_git()
-        for branch in self.branches:
-            svn_path = self.get_dot_svn_path(branch)
-
         # Create a .git/ggit/ folder. 
         #   (Backup the previous contents if it exists.)
         self._backup_ggit()
 
         # Add .svn to the .git/info/exclude folder.
+        git = Git.dot_git()
         exclude = os.path.join(git, 'info', 'exclude')
         check_call('echo .svn >> ' + exclude)
 
+        config_path = self.get_config_path()
+        self.write(config_path)
+
     def setup_git_svn(self):
-        # TODO
+        git = Git.dot_git()
+
+        autogen_head = textwrap.dedent('''
+        # {{ ggit:{version}
+        # This section has been automatically modfied by ggit.
+        # Take care when removing it
+        '''.format(version=VERSION))
+
+        autogen_tail = textwrap.dedent('''
+        # }} ggit:{version} 
+        '''.format(version=VERSION))
+
+        head_re = re.compile(r'#\w*{\w*ggit:\d+')
+        tail_re = re.compile(r'#\w*}\w*ggit:\d+')
+
+
         # Setup the .git/config fetches based on ggit-config file
         #   (Possibly replacing old version. Use a begin and end statement to mark for
         #   easy scripting.)
+        def remove_old_entry(fp):
+            lines = []
+            old_tail = old_head = None
+            for idx, line in enumerate(f):
+                lines.append(line)
+                if head_re.search(line):
+                    if old_head is not None:
+                        return Status(Status.GitConfigError)
+                    old_head = idx
+                if tail_re.search(line):
+                    if old_tail is not None:
+                        return Status(Status.GitConfigError)
+                    old_tail = idx
+
+            old_idx = (old_head, old_tail)
+            if not all(old_idx) and any(old_idx):
+                return Status(Status.GitConfigError)
+            if old_tail < old_head:
+                return Status(Status.GitConfigError)
+            if old_head:
+                lines = lines[:old_head] + lines[old_tail+1:]
+                # rewind file, write lines from beginning
+                fp.seek(0, 0)
+                fp.writelines(lines)
+            return OK
+
+        def write_new_entry(fp):
+            fetches = ((remote, branch) for (branch,remote) in 
+                    self.branches.items())
+            config = GitSvnConfig.fill_template(self.url, fetches)
+            fp.write(autogen_head)
+            fp.write(config)
+            fp.write(autogen_tai)
+
+        with open(os.path.join(git, 'config'), 'r+') as fp:
+            status = remove_old_entry(fp)
+            if status is not OK:
+                return status
+            fp.seek(2, 0)
+            write_new_entry(fp)
 
         # Run git svn fetch
         check_call('git fetch {remote} "refs/heads/{folder}/*:'
@@ -442,14 +554,14 @@ class Clone(Subcommand):
         if ret != 0:
             print('The remote "%s" does not have a ggit config branch "%s"'
                     % (remote, ref))
-            return Status.NoConfigBranch
+            return Status(Status.NoConfigBranch)
 
         # If no local folder name provided, use git's naming scheme.
         if directory is None:
             directory = Git.basename(repository)
 
         if os.path.exists(directory):
-            return Status.PathExists
+            return Status(Status.PathExists)
 
         check_call('git clone {repo} {directory}'
                 .format(repo=repository, directory=directory))
@@ -471,26 +583,28 @@ class Switch(Subcommand):
     def run(self, args):
         force = args['force']
         hashish = args['hashish']
+
         # Check that we are in a git repo.
-        if not Git.in_a_repo():
-            return Status.NotInRepo
+        status = Git.in_a_repo()
+        if status is OK:
+            return status
 
         # Check that the working directory is clean.
         if not Git.is_clean() and not force:
-            return Status.RepoIsDirty
+            return Status(Status.RepoIsDirty)
 
+        # Search the log for latest git-svn commit
         log_entry = Git.latest_svn_commit(hashish)
 
         # Check the .git/ggit/config file for the remote to .svn mapping.
-        config = GGitConfig()
-        config.setup_svn(log_entry.url, log_entry.revision)
+        config = GGitConfig.from_dot_git()
+        config.switch_svn(log_entry.url, log_entry.revision)
 
-        # Run git checkout to complete.
+        # Run git checkout to complete head change.
         check_call('git checkout ' + hashish)
 
 
 class Configure(Subcommand):
-
     def init_parser(self, parser):
         pass
 
@@ -499,8 +613,9 @@ class Configure(Subcommand):
         Read from the ggit-config branch and configure the git repository to match.
         '''
         # Check that we are in a git repo.
-        if not Git.in_a_repo():
-            return Status.NotInRepo
+        status = Git.in_a_repo()
+        if status is OK:
+            return status
 
         # Check that the ggit-config branch exists locally or as a remote by looking
         #   in .git/refs/heads and .git/refs/remotes, if not local, but in multiple
@@ -521,7 +636,7 @@ class Configure(Subcommand):
             if local_config_branch in matches:
                 return local_config_branch
             if len(matches) > 1:
-                return Status.AmbiguousReference
+                return Status(Status.AmbiguousReference)
             return matches[0]
 
         branch = find_config_branch()
