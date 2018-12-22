@@ -312,6 +312,12 @@ class Git:
     def dot_git():
         return os.path.join(Git.toplevel, '.git')
 
+    @staticmethod
+    def basename(repository):
+        base = os.path.basename(respository)
+        return re.sub(r'.git$', '', base)
+
+
 
 class GitSvnLogEntry:
     # git-svn-id: http://rtosvc/trunk/rtos@274190 d5d84855-3516-0410-9f1e-893281b4b339
@@ -475,15 +481,7 @@ class GGitConfig():
 
 GGIT_CONFIG_BRANCH =  'ggit-config'
 
-# CLONE
-def run(args):
-    repository = args['repository']
-    directory = args['directory'] # optional
-
-    def git_basename(repository):
-        base = os.path.basename(respository)
-        return re.sub(r'.git$', '', base)
-    #TODO Attach to class.
+class Clone(Subcommand):
     NON_GIT_HEAD =  textwrap.dedent('''
             The HEAD is not pointing to a git-svn branch.
             In order to setup the correct .svn, switch branches with ggit. E.g:
@@ -491,55 +489,64 @@ def run(args):
                 ggit switch <branch-name>
             ''')
 
-    # Check that the remote has the ggit-config branch.
-    check_call('git ls-remote -q --exit-code {remote} {ref}'
-            .format(remote=remote, ref=ref))
+    def init_parser(self, parser):
+        pass
 
-    # If no local folder name provided, use git's naming scheme.
-    directory = git_basename(repository) if directory is None
-    if os.path.exists(directory):
-        return Status.PathExists
+    def run(self, args):
+        repository = args['repository']
+        directory = args['directory'] # optional
 
-    check_call('git clone {repo} {directory}'
-            .format(repo=repository, directory=directory))
+        # Check that the remote has the ggit-config branch.
+        check_call('git ls-remote -q --exit-code {remote} {ref}'
+                .format(remote=remote, ref=ref))
 
+        # If no local folder name provided, use git's naming scheme.
+        directory = Git.basename(repository) if directory is None
+        if os.path.exists(directory):
+            return Status.PathExists
 
-    with CWD(directory):
-        # RUN CONFIGURE
-        config = Configure()
-
-        # Create local branches for all remote git-svn branches.
-        check_call('git fetch origin'
-                ' refs/remotes/origin/git-svn/*'
-                ':refs/heads/git-svn/*')
+        check_call('git clone {repo} {directory}'
+                .format(repo=repository, directory=directory))
 
 
-# SWITCH
-def run(args):
-    force = args['force']
-    hashish = args['hashish']
-    # Check that we are in a git repo.
-    if not Git.in_a_repo():
-        return Status.NotInRepo
+        with CWD(directory):
+            # RUN CONFIGURE
+            config = Configure()
 
-    # Check that the working directory is clean.
-    if not Git.is_clean() and not force:
-        return Status.RepoIsDirty
-
-    log_entry = Git.latest_svn_commit(hashish)
-
-    # Check the .git/ggit/config file for the remote to .svn mapping.
-    config = GGitConfig()
-    config.setup_svn(log_entry.url, log_entry.revision)
-
-    # Run git checkout to complete.
-    check_call('git checkout ' + hashish)
+            # Create local branches for all remote git-svn branches.
+            check_call('git fetch origin'
+                    ' refs/remotes/origin/git-svn/*'
+                    ':refs/heads/git-svn/*')
 
 
-# CONFIGURE
+class Switch(Subcommand):
+    def init_parser(self, parser):
+        pass
+
+    def run(self, args):
+        force = args['force']
+        hashish = args['hashish']
+        # Check that we are in a git repo.
+        if not Git.in_a_repo():
+            return Status.NotInRepo
+
+        # Check that the working directory is clean.
+        if not Git.is_clean() and not force:
+            return Status.RepoIsDirty
+
+        log_entry = Git.latest_svn_commit(hashish)
+
+        # Check the .git/ggit/config file for the remote to .svn mapping.
+        config = GGitConfig()
+        config.setup_svn(log_entry.url, log_entry.revision)
+
+        # Run git checkout to complete.
+        check_call('git checkout ' + hashish)
+
+
 class Config(Subcommand):
-
-    def init_parser
+    def init_parser(self, parser):
+        pass
     def run(self, args):
         '''
         Read from the ggit-config branch and configure the git repository to match.
@@ -590,7 +597,7 @@ class Config(Subcommand):
         # Check if the current HEAD is a git svn branch. 
         log_entry = most_recent_svn_commit()
         if log_entry is None:
-            print(NON_GIT_HEAD)
+            print(self.NON_GIT_HEAD)
             return
         else:
             config.switch_svn(log_entry.url, log_entry.revision)
