@@ -17,10 +17,10 @@ import textwrap
 
 GIT_CONFIG_FILE = 'config'
 GGIT_FOLDER = 'git-svn'
-GGIT_CONFIG_BRANCH = '%s/CONFIG' % GGIT_FOLDER
+GGIT_CONFIG_BRANCH =  'ggit-config'
 
 
-class Cwd:
+class Chdir:
     def __init__(self, directory):
         self._dir = directory
 
@@ -33,6 +33,7 @@ class Cwd:
         if hasattr(self,'_olddir'):
             os.chdir(self._olddir)
 
+
 class TemporaryDirectory(object):
     def __enter__(self):
         self.dir = tempfile.mkdtemp()
@@ -40,6 +41,83 @@ class TemporaryDirectory(object):
 
     def __exit__(self, *args):
         shutil.rmtree(self.dir)
+
+def _preoprocess_call(*args, **kwargs):
+    if 'shell' not in kwargs:
+        kwargs.setdefault('executable', 'bash')
+        kwargs.setdefault('shell', True)
+    pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
+    return args, kwargs
+
+def call_output(*args, **kwargs):
+    args, kwargs = _preoprocess_call(*args, **kwargs)
+    return subprocess.check_output(*args, **kwargs)
+
+def check_call(*args, **kwargs):
+    args, kwargs = _preoprocess_call(*args, **kwargs)
+    return subprocess.check_call(*args, **kwargs)
+
+def call_status(*args, **kwargs):
+    args, kwargs = _preoprocess_call(*args, **kwargs)
+    return subprocess.call(*args, **kwargs)
+
+class Git:
+    @staticmethod
+    def is_dirty():
+        output = call_output('git status --porcelain')
+        return bool(output)
+
+    @staticmethod
+    def in_a_repo():
+        try:
+            check_output('git rev-parse --show-toplevel')
+        except subprocess.CalledProcessError as e:
+            return e.output
+        return None
+
+    @staticmethod
+    def enforce_clean():
+        if Git.is_dirty():
+            print(textwrap.dedent(
+                '''
+                Refusing to change branches, working directory is dirty.
+                Consider stashing changes:
+
+                    git stash --include-untracked
+
+                '''
+                ))
+            return False
+        return True
+
+    @staticmethod
+    def most_recent_svn_commit(hashish):
+        '''
+        Check the git log for the latest git-svn log entry. Return a GitSvnLogEntry
+        object for the entry. If no such entry is found return None. 
+        '''
+        #
+        # Use git log, search through the output for the most recent git-svn log
+        # message.
+        #
+        # Return the metadata.
+        return None
+        return GitSvnConfig()
+
+    @staticmethod
+    def toplevel():
+        output = check_output('git rev-parse --show-toplevel')
+        return output
+
+    @staticmethod
+    def dot_git():
+        return os.path.join(Git.toplevel, '.git')
+
+    @staticmethod
+    def basename(repository):
+        base = os.path.basename(respository)
+        return re.sub(r'.git$', '', base)
+
 
 class GitSvnConfig():
     template = '''
@@ -62,105 +140,6 @@ class GitSvnConfig():
         fetch_templates = '\n'.join(fetch_templates)
         return cls.template.format(url=url, folder=GGIT_FOLDER, 
                 fetches=fetch_templates)
-
-class EXIT_CODE:
-    SUCCESS = 0
-    SAFTEY = 1
-    NO_SUCH_REF = 2
-    NOT_A_REPOSITORY = 3
-
-def create_dotsvn(svn_url):
-    with TemporaryDirectory() as td:
-        try:
-            shutil.rmtree('.svn')
-        except OSError:
-            pass
-        call('svn co --depth=empty "{url}" "{tmpdir}"'
-                .format(url=svn_url, tmpdir=td.dir))
-        call('cp -r "{tmpdir}/.svn" .svn'.format(tmpdir=td.dir))
-
-class Git:
-    @staticmethod
-    def in_a_repo():
-        try:
-            output = call('git rev-parse --show-toplevel')
-        except subprocess.CalledProcessError:
-            # TODO Save of the git stderr, it has useful information about the
-            # search path.
-            return 'Not a git repository'
-        return None
-
-    @staticmethod
-    def is_repo_missing():
-
-    @staticmethod
-    def is_dirty():
-        output = call('git status --porcelain')
-        return bool(output)
-
-    @staticmethod
-    def svn_url():
-        svn_url = call('git svn info --url')
-        svn_url = svn_url.rstrip()
-        return svn_url
-
-    @staticmethod
-    def svn_initialized():
-        # TODO Check return val
-        call('git svn info')
-
-    @staticmethod
-    def remote_has_ref(remote, ref):
-        try:
-            call('git ls-remote -q --exit-code {remote} {ref}'
-                    ''.format(remote=remote, ref=ref))
-        except subprocess.CalledProcessError:
-            return False
-        return True
-
-    @staticmethod
-    def configure_git_svn(remote, config_branch):
-        with open('.git/info/exclude', 'w+') as exclude:
-            exclude.write('.svn\n')
-        call('git show {remote}/{branch}:config >> .git/config'
-                .format(remote=remote, branch=config_branch))
-        call('git fetch {remote} "refs/heads/{folder}/*:'
-                'refs/remotes/svn/{folder}/*"'
-                .format(folder=GGIT_FOLDER, remote=remote))
-        call('git svn fetch')
-        svn_url = Git.svn_url()
-
-        # Clean up old .svn cache if exists
-        # Checkout svn to a temporary directory
-        # Copy over the .svn
-        # Update the svn repo
-        # Restore files updated with the svn revert metadata bs.
-        create_dotsvn(svn_url)
-        rev = Git.get_revision()
-        git_update(rev)
-
-
-    @staticmethod
-    def enforce_clean():
-        if Git.is_dirty():
-            print(textwrap.dedent(
-                '''
-                Refusing to change branches, working directory is dirty.
-                Consider stashing changes:
-                    git stash --include-untracked
-                '''
-                ))
-            return False
-        return True
-
-
-def call(*args, **kwargs):
-    if 'shell' not in kwargs:
-        kwargs.setdefault('executable', 'bash')
-        kwargs.setdefault('shell', True)
-
-    pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
-    return subprocess.check_output(*args, **kwargs)
 
 
 class Subcommand(object):
@@ -195,134 +174,94 @@ class Subcommand(object):
         raise NotImplemented
 
 
-class Initialize(Subcommand):
-    '''
-    Fetch and initialize a ggit repo from an svn path.
-
-    It's recommended to use this within a bare repo.
-    '''
-    def init_parser(self, parser):
-        parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
-        parser.add_argument('-r', '--revision', default='0')
-        parser.add_argument('url')
-        parser.add_argument('remote-names', nargs='+',
-                help='E.g. branches/ap/trunk:aptrunk')
-
-    def _parse_remotes(self, remotes):
-        fetches = []
-        for item in remotes:
-            match = re.search('(.*):(.*)', item)
-            if not match:
-                raise ValueError('Argument incorrect format')
-            fetches.append((match.group(1), match.group(2)))
-        return fetches
-
-    def run(self, args):
-        err = Git.is_repo_missing()
-        if err is not None:
-            return EXIT_CODE.NOT_A_REPOSITORY
-
-        url = args['url']
-        remotes = args['remote-names']
-        rev = args['revision']
-        conf_branch = args['config_branch']
-
-        fetches = self._parse_remotes(remotes)
-        config = GitSvnConfig.fill_template(url, fetches)
-
-        # TODO Check if the config branch already exists
-
-        call('git checkout --orphan {branch}'.format(branch=conf_branch))
-        call('git reset')
-        with open(GIT_CONFIG_FILE, 'w') as f:
-            f.write(config)
-        call('git add {config}'.format(config=GIT_CONFIG_FILE))
-        call('git commit -m "<ggit autocommit> Create config file"')
-        # TODO Create function to idempotently add to file
-        call('cat config >> .git/config')
-        call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
-
-
-class GenerateIgnore(Subcommand):
-    '''Generate an ignore file'''
-
-    def init_parser(self, parser):
-        # TODO Accept optional argument of gitignroe manual file
-        pass
-
-    @staticmethod
-    def get_externs():
-        # Get a list of svn externals
-        # (Parse svn st for externals)
-        externs = []
-        changelist = call('svn st')
-        for line in changelist.splitlines():
-            match = re.search(r'^\s*X\s*(.*)$', line)
-            if match:
-                externs.append(match.groups(0))
-        return externs
-
-    def run(self, args):
-        externs = self.get_externs()
-        svn_ignores = call('git svn show-ignore')
-        svn_ignores = filter(lambda string: not string.startswith('#'), svn_ignores.splitlines())
-        for line in sorted(set(externs) and set(svn_ignores)):
-            print(line)
-        return EXIT_CODE.SUCCESS
-
-
+#class Initialize(Subcommand):
+#    '''
+#    Fetch and initialize a ggit repo from an svn path.
+#
+#    It's recommended to use this within a bare repo.
+#    '''
+#    def init_parser(self, parser):
+#        parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
+#        parser.add_argument('-r', '--revision', default='0')
+#        parser.add_argument('url')
+#        parser.add_argument('remote-names', nargs='+',
+#                help='E.g. branches/ap/trunk:aptrunk')
+#
+#    def _parse_remotes(self, remotes):
+#        fetches = []
+#        for item in remotes:
+#            match = re.search('(.*):(.*)', item)
+#            if not match:
+#                raise ValueError('Argument incorrect format')
+#            fetches.append((match.group(1), match.group(2)))
+#        return fetches
+#
+#    def run(self, args):
+#        err = Git.is_repo_missing()
+#        if err is not None:
+#            return EXIT_CODE.NOT_A_REPOSITORY
+#
+#        url = args['url']
+#        remotes = args['remote-names']
+#        rev = args['revision']
+#        conf_branch = args['config_branch']
+#
+#        fetches = self._parse_remotes(remotes)
+#        config = GitSvnConfig.fill_template(url, fetches)
+#
+#        # TODO Check if the config branch already exists
+#
+#        check_call('git checkout --orphan {branch}'.format(branch=conf_branch))
+#        check_call('git reset')
+#        with open(GIT_CONFIG_FILE, 'w') as f:
+#            f.write(config)
+#        check_call('git add {config}'.format(config=GIT_CONFIG_FILE))
+#        check_call('git commit -m "<ggit autocommit> Create config file"')
+#        # TODO Create function to idempotently add to file
+#        check_call('cat config >> .git/config')
+#        check_call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
+#
+#
+#class GenerateIgnore(Subcommand):
+#    '''Generate an ignore file'''
+#
+#    def init_parser(self, parser):
+#        # TODO Accept optional argument of gitignroe manual file
+#        pass
+#
+#    @staticmethod
+#    def get_externs():
+#        # Get a list of svn externals
+#        # (Parse svn st for externals)
+#        externs = []
+#        changelist = call_output('svn st')
+#        for line in changelist.splitlines():
+#            match = re.search(r'^\s*X\s*(.*)$', line)
+#            if match:
+#                externs.append(match.groups(0))
+#        return externs
+#
+#    def run(self, args):
+#        externs = self.get_externs()
+#        svn_ignores = call_output('git svn show-ignore')
+#        svn_ignores = filter(lambda string: not string.startswith('#'), svn_ignores.splitlines())
+#        for line in sorted(set(externs) and set(svn_ignores)):
+#            print(line)
+#        return EXIT_CODE.SUCCESS
 
 
-# New version
-def idempotent_write(fname, string):
-    # Search for the start and end tags
-    with open(fname, 'r') as f:
-        buf = f.read()
+#######################################################
 
-class Git:
-    @staticmethod
-    def in_a_repo():
-        try:
-            output = check_output('git rev-parse --show-toplevel')
-        except subprocess.CalledProcessError:
-            # TODO Save the git stderr, it has useful information about the search path.
-            return 'Not a git repository'
-        return None
+#######################################################
 
-    @staticmethod
-    def most_recent_svn_commit(hashish):
-        '''
-        Check the git log for the latest git-svn log entry. Return a GitSvnLogEntry
-        object for the entry. If no such entry is found return None. 
-        '''
-        #
-        # Use git log, search through the output for the most recent git-svn log
-        # message.
-        #
-        # Return the metadata.
-        return None
-        return GitSvnConfig()
+#######################################################
 
-    @staticmethod
-    def toplevel():
-        output = check_output('git rev-parse --show-toplevel')
-        return output
-
-    @staticmethod
-    def dot_git():
-        return os.path.join(Git.toplevel, '.git')
-
-    @staticmethod
-    def basename(repository):
-        base = os.path.basename(respository)
-        return re.sub(r'.git$', '', base)
-
-
+#######################################################
 
 class GitSvnLogEntry:
     # git-svn-id: http://rtosvc/trunk/rtos@274190 d5d84855-3516-0410-9f1e-893281b4b339
     SVN_ENTRY_REGEX = re.compile(
-            r'git-svn-id: (?P<url>([^@]+)@(?P<rev>\d+)'
+            r'git-svn-id: (?P<url>[^@]+)@(?P<rev>\d+)'
             r' (?P<svn_uuid>[0-9a-z\-]+)')
 
     # commit 3505cb1adc010f7dcf18247846fe09d7353acb9c
@@ -463,7 +402,7 @@ class GGitConfig():
         #   easy scripting.)
 
         # Run git svn fetch
-        call('git fetch {remote} "refs/heads/{folder}/*:'
+        check_call('git fetch {remote} "refs/heads/{folder}/*:'
                 'refs/remotes/svn/{folder}/*"'
                 .format(folder=GGIT_FOLDER, remote=remote))
 
@@ -474,34 +413,41 @@ class GGitConfig():
                 shutil.rmtree(svn_path)
 
             with TemporaryDirectory() as td:
-                call('svn co --depth=empty "{url}" "{tmpdir}"'
+                check_call('svn co --depth=empty "{url}" "{tmpdir}"'
                         .format(url=svn_url, tmpdir=td.dir))
                 shutil.copytree(os.path.join(td.dir, '.svn'), svn_path)
 
 
-GGIT_CONFIG_BRANCH =  'ggit-config'
-
 class Clone(Subcommand):
-    NON_GIT_HEAD =  textwrap.dedent('''
-            The HEAD is not pointing to a git-svn branch.
-            In order to setup the correct .svn, switch branches with ggit. E.g:
+    NON_GIT_HEAD = textwrap.dedent('''
+        The HEAD is not pointing to a git-svn branch.
+        In order to setup the correct .svn, switch branches with ggit
 
-                ggit switch <branch-name>
-            ''')
+            ggit switch <branch-name>
+
+    ''')
 
     def init_parser(self, parser):
-        pass
+        parser.add_argument('repository')
+        parser.add_argument('directory', default=None)
 
     def run(self, args):
         repository = args['repository']
         directory = args['directory'] # optional
+        ref = GGIT_CONFIG_BRANCH
 
         # Check that the remote has the ggit-config branch.
-        check_call('git ls-remote -q --exit-code {remote} {ref}'
-                .format(remote=remote, ref=ref))
+        ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
+                .format(remote=repository, ref=ref))
+        if ret != 0:
+            print('The remote "%s" does not have a ggit config branch "%s"'
+                    % (remote, ref))
+            return Status.NoConfigBranch
 
         # If no local folder name provided, use git's naming scheme.
-        directory = Git.basename(repository) if directory is None
+        if directory is None:
+            directory = Git.basename(repository)
+
         if os.path.exists(directory):
             return Status.PathExists
 
@@ -509,9 +455,8 @@ class Clone(Subcommand):
                 .format(repo=repository, directory=directory))
 
 
-        with CWD(directory):
-            # RUN CONFIGURE
-            config = Configure()
+        with Chdir(directory):
+            Configure().run(args)
 
             # Create local branches for all remote git-svn branches.
             check_call('git fetch origin'
@@ -544,9 +489,11 @@ class Switch(Subcommand):
         check_call('git checkout ' + hashish)
 
 
-class Config(Subcommand):
+class Configure(Subcommand):
+
     def init_parser(self, parser):
         pass
+
     def run(self, args):
         '''
         Read from the ggit-config branch and configure the git repository to match.
@@ -573,7 +520,7 @@ class Config(Subcommand):
 
             if local_config_branch in matches:
                 return local_config_branch
-            if len(matches) > 1
+            if len(matches) > 1:
                 return Status.AmbiguousReference
             return matches[0]
 
