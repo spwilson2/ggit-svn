@@ -2,6 +2,8 @@
 from __future__ import print_function
 
 import argparse
+import ConfigParser
+import io
 import itertools
 import logging
 import pprint
@@ -272,8 +274,10 @@ class GenerateIgnore(Subcommand):
 
 
 # New version
-
-
+def idempotent_write(fname, string):
+    # Search for the start and end tags
+    with open(fname, 'r') as f:
+        buf = f.read()
 
 class Git:
     @staticmethod
@@ -298,6 +302,15 @@ class Git:
         # Return the metadata.
         return None
         return GitSvnConfig()
+
+    @staticmethod
+    def toplevel():
+        output = check_output('git rev-parse --show-toplevel')
+        return output
+
+    @staticmethod
+    def dot_git():
+        return os.path.join(Git.toplevel, '.git')
 
 
 class GitSvnLogEntry:
@@ -333,44 +346,131 @@ class GitSvnLogEntry:
 
 
 class GGitConfig():
-    def __init__(self):
-        pass
+
+    def __init__(self, url, branches):
+        '''
+        :param url: Base url of the svn respository
+        :param branches: {branch: path} dictionary
+        '''
+        self.url = url
+        self.branches = branches
+
+    @classmethod
+    def from_str(cls, string):
+        parser = ConfigParser.SafeConfigParser()
+        fp = io.BytesIO(string)
+        parser.readfp(fp)
+        sections = parser.sections()
+
+        # Find brach.
+        branches = []
+        for section in sections:
+            match = re.match('branch\.(.*)')
+            if match:
+                branches.append((match.group(0), match.group(1)))
+
+        paths = {}
+        for (section, branch) in branches:
+            path = parser.get(section, 'path')
+            assert path
+            paths[branch] = path
+
+        url = parser.get('base', 'url')
+        assert url
+        return GGitConfig(url, branches)
 
     @classmethod
     def from_branch(cls):
-        # Use `git show` to read the ggit-config file from the prefered branch.
-        return GGitConfig()
+        config = check_output('git show {remote}/{branch}:config'
+                .format(remote=remote, branch=config_branch))
+        return cls.from_str(config)
 
     @classmethod
     def from_dot_git(cls):
-        return GGitConfig()
+        Git.toplevel()
+        with open(Git.dot_git(), 'r') as f:
+            config = f.read()
+        return cls.from_str(config)
 
     def url_to_branch(self, url):
-        # Given the url, covert it to a branch.
-        pass
+        '''Given the url, convert it to a branch.'''
+        for branch, path  in self.branches.items():
+            if url == self.url + '/' + path:
+                return branch
+
+    @staticmethod
+    def get_dot_svn_path(branch):
+        git = GGitConfig.get_ggit_path()
+        return os.path.join(git, 'svn', branch)
+
+    @staticmethod
+    def get_ggit_path(self):
+        git = Git.dot_git()
+        return os.path.join(git, 'ggit')
 
     def switch_svn(self, url, rev):
+        branch = self.url_to_bramch(url)
         # Replace the symlink .svn with one in .git/ggit/
+        svn_path = self.get_dot_svn_path(branch)
+        if os.path.exists('.svn'):
+            os.remove('.svn')
+        os.symlink(svn_path, '.svn')
+
         # Run svn update to set the revision and depth.
+        check_call( 'svn update -q --force --accept working'
+                ' --set-depth=infinity -r {rev}'
+                ''.format(rev=rev))
         # Run svn revert to clean to a known svn state.
-        pass
+        check_call('svn revert -q -R .')
+
+    def _backup_ggit(self):
+        ggit = self.get_ggit_path()
+        if not os.path.exists(ggit):
+            os.mkdir(ggit)
+        else:
+            backups = os.path.join(ggit, 'backups')
+            if not os.path.exists(backups):
+                os.mkdir(backups)
+            backup_dir = tempfile.mkdtemp(dir=backups)
+            old_files = os.listdir(ggit)
+            old_files = (f for f in old_files if f != 'backups')
+            for f in old_files:
+                shutil.move(f, backup_dir)
 
     def setup_ggit(self):
+        git = Git.dot_git()
+        for branch in self.branches:
+            svn_path = self.get_dot_svn_path(branch)
+
         # Create a .git/ggit/ folder. 
         #   (Backup the previous contents if it exists.)
+        self._backup_ggit()
+
         # Add .svn to the .git/info/exclude folder.
-        pass
+        exclude = os.path.join(git, 'info', 'exclude')
+        check_call('echo .svn >> ' + exclude)
 
     def setup_git_svn(self):
+        # TODO
         # Setup the .git/config fetches based on ggit-config file
         #   (Possibly replacing old version. Use a begin and end statement to mark for
         #   easy scripting.)
+
         # Run git svn fetch
-        pass
+        call('git fetch {remote} "refs/heads/{folder}/*:'
+                'refs/remotes/svn/{folder}/*"'
+                .format(folder=GGIT_FOLDER, remote=remote))
 
     def setup_empty_svn(self):
-        # Prepare the --depth=empty .svn folders within the .git/ggit/ folder
-        pass
+        for branch in self.branches:
+            svn_path = self.get_dot_svn_path(branch)
+            if os.path.exist(svn_path):
+                shutil.rmtree(svn_path)
+
+            with TemporaryDirectory() as td:
+                call('svn co --depth=empty "{url}" "{tmpdir}"'
+                        .format(url=svn_url, tmpdir=td.dir))
+                shutil.copytree(os.path.join(td.dir, '.svn'), svn_path)
 
 
 GGIT_CONFIG_BRANCH =  'ggit-config'
