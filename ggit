@@ -36,15 +36,17 @@ Consider stashing changes:
 
 ''')
 
+REMOTE_TYPES = {
+    'file:///',
+    'http://',
+    'git://',
+    'svn://',
+    'ssh://',
+}
+
 
 python_version = sys.version_info
 python_version = python_version[0]
-
-if python_version <= 2:
-    import ConfigParser as configparser
-else:
-    import configparser
-
 
 class Chdir:
     def __init__(self, directory):
@@ -244,28 +246,129 @@ class Git:
             return matches[0]
 
 
-class GitSvnConfig():
+class GitSvnRemote():
     template = '''
-    [svn-remote "svn"]
-        url = {url}
+    [svn-remote "{name}"]
+    \turl = {url}
     {fetches}
     '''
     template = textwrap.dedent(template)
-    fetch_template = ('    fetch = {remote_branch}:'
-                      'refs/remotes/svn/{folder}/{branch}')
+    fetch_template = ('\tfetch = {path}:{ref}')
+    def __init__(self, name, url, fetches):
+        '''
+        :param url:
+            Url of the svn remote to pull both git-svn and svn updates from
+        :param fetches:
+            A (path, ref) tuple used to configure git-svn fetching.
+        '''
+        self.name = name
+        self.url = url
 
-    @classmethod
-    def fill_template(cls, url, fetches):
+        self.fetches = []
+        self.branches = []
+        self.urls = []
+
+        # Map of normalized svn path -> local fetch ref
+        #self._url_map = {}
+        #self._rev_url_map = {}
+
+        for fetch in fetches:
+            (path, fetch_ref) = fetch.split(':')
+            self.fetches.append((path, fetch_ref))
+
+            # TODO Do I want to remove refs/(heads)|(remotes)/
+            # from branch name?
+            self.branches.append(fetch_ref)
+            self.urls.append(os.path.join(url, path))
+
+            #self._rev_url_map[fetch_ref] = url
+            #url = os.path.normpath(os.path.join(url, path))
+            #self._url_map[url] = fetch_ref
+
+    #def branch_to_url(self, branch):
+    #    return self._rev_url_map.get(branch)
+
+    #def url_to_branch(self, url):
+    #    return self._url_map.get(os.path.normpath(url))
+
+    def __str__(self):
         fetch_templates = []
-        for (remote_branch, branch) in fetches:
-            fetch_templates.append(cls.fetch_template.format(
-                folder=GGIT_FOLDER,
-                remote_branch=remote_branch,
-                branch=branch))
+        for (path, ref) in self.fetches:
+            fetch_templates.append(self.fetch_template.format(
+                path=path, ref=ref))
 
         fetch_templates = '\n'.join(fetch_templates)
-        return cls.template.format(
-            url=url, folder=GGIT_FOLDER, fetches=fetch_templates)
+        return self.template.format(url=self.url, name=self.name,
+                                   fetches=fetch_templates)
+
+
+class ConfigParserException(Exception):
+    pass
+
+
+class GitConfigParser(object):
+    _COMMENT_RE = re.compile(r'[^#](?P<comment>#.*)$')
+    _SECTION_RE = re.compile(r'\s*\[(?P<section>[^\]]*)\]')
+    _ELEMENT_RE = re.compile(r'\s*(?P<key>[^=\s]*)\s*'
+                             '=\s*(?P<val>[^=\s]*)\s*')
+
+    def __init__(self):
+        '''
+        Options format: {section: {key: [values, ...]} }
+        '''
+        self.parsed_options = {}
+
+    def __str__(self):
+        lines = []
+        for section, opt_keys in self.parsed_options.items():
+            lines.append('[%s]' % section)
+            for key, values in opt_keys:
+                for value in values:
+                    lines.append('%s = %s' % (key, value))
+        return '\n'.join(lines)
+
+    def sections(self):
+        return iter(self.parsed_options)
+
+    def get(self, section, key):
+        section_map = self.parsed_options.get(section)
+        if section_map is None:
+            raise ValueError('Not such section: "%s"'
+                             '\n Avaliable sections: %s' 
+                             % (section, list(self.sections())))
+        values = section_map.get(key)
+        return values
+
+    @classmethod
+    def from_string(cls, string):
+        self = GitConfigParser()
+        new_string = []
+        # Remove comments
+        for line in string.splitlines():
+            new_string.append(self._COMMENT_RE.sub('', line))
+
+        # Assert that the section starts before an element
+        for line in new_string:
+            if self._SECTION_RE.search(line):
+                break
+            match = self._ELEMENT_RE.search(line)
+            if match:
+                raise ConfigParserException(
+                    '%s\nElement not inside section' % match.group(0))
+
+        cur_section = None
+        for line in new_string:
+            sect_match = self._SECTION_RE.match(line)
+            elem_match = self._ELEMENT_RE.match(line)
+            if sect_match:
+                cur_section = sect_match.group('section')
+                self.parsed_options.setdefault(cur_section, {})
+            if elem_match:
+                key = elem_match.group('key')
+                val = elem_match.group('val')
+                self.parsed_options[cur_section].setdefault(key, [])
+                self.parsed_options[cur_section][key].append(val)
+        return self
 
 
 class GitSvnLogEntry:
@@ -303,37 +406,40 @@ class GitSvnLogEntry:
 
 # TODO Refactor this class.  Separate data from users of that data.
 class GGitConfig():
-    def __init__(self, url, branches):
-        '''
-        :param url: Base url of the svn respository
-        :param branches: {branch: path} dictionary
-        '''
-        self.url = url
-        self.branches = branches
+    _SVN_REMOTE_RE = re.compile(r'svn-remote\s*"(.*)"')
+
+    def __init__(self):
+        self.remotes = []
+        self._config_parser = None
 
     @classmethod
     def from_str(cls, string):
-        parser = configparser.SafeConfigParser()
-        fp = io.BytesIO(string)
-        parser.readfp(fp)
-        sections = parser.sections()
+        self = cls()
 
-        # Find brach.
-        branches = []
-        for section in sections:
-            match = re.match(r'branch\.(.*)', section)
+        self._config_parser = GitConfigParser.from_string(string)
+
+        # Find all 'svn-remote's
+        for section in self._config_parser.sections():
+            match = self._SVN_REMOTE_RE.search(section)
             if match:
-                branches.append((match.group(0), match.group(1)))
+                remote = match.group(1)
+                url = self._config_parser.get(section, 'url')
+                if url is None or len(url) > 1:
+                    raise ValueError('git-svn remote must have single url')
+                url = url[0]
 
-        paths = {}
-        for (section, branch) in branches:
-            path = parser.get(section, 'path')
-            assert path
-            paths[branch] = path
+                fetches = self._config_parser.get(section, 'fetch')
+                if fetches is None:
+                    raise ValueError('git-svn remote must have a url')
 
-        url = parser.get('base', 'url')
-        assert url
-        return GGitConfig(url, paths)
+                self.remotes.append(GitSvnRemote(remote, url, fetches))
+
+        remote_urls = {remote.url for remote in self.remotes}
+        if len(remote_urls) != len(self.remotes):
+            raise ValueError('Multiple git-svn remotes with '
+                             'the same url is not supported')
+
+        return self
 
     @classmethod
     def from_branch(cls, branch):
@@ -358,35 +464,44 @@ class GGitConfig():
             config = f.read()
         return cls.from_str(config)
 
-    def write(self, pathname):
-        '''Write the config object to the given file pathname.'''
-        parser = configparser.ConfigParser()
-        parser.add_section('base')
-        parser.set('base', 'url', self.url)
-
-        for branch, path in self.branches.items():
-            section = 'branch.' + branch
-            parser.add_section(section)
-            parser.set(section, 'path', path)
-
-        with open(pathname, 'w') as f:
-            parser.write(f)
-
-    def branch_to_url(self, branch):
-        fetch_path = self.branches[branch]
-        return self.url + '/' + fetch_path
+    def write(self, fp):
+        '''Write the svn remotes to the given pathname.'''
+        for remote in self.remotes:
+            fp.write(str(remote))
 
     def url_to_branch(self, url):
-        '''Given the url, convert it to a branch.'''
-        for branch, path in self.branches.items():
-            branch_url = self.url + '/' + path
-            if os.path.normpath(url) == os.path.normpath(branch_url):
+        for remote in self.remotes:
+            branch = remote.url_to_branch(url)
+            if branch:
                 return branch
 
+    #def branch_to_url(self, branch):
+    #    for remote in self.remotes:
+    #        branch = remote.branch_to_url(branch)
+    #        if branch:
+    #            return branch
+
+    def url_to_svn_cache(self, url):
+        # Remove the protocol from the url
+        for remote_type in REMOTE_TYPES:
+            if url.startswith(remote_type):
+                url = url[len(remote_type):]
+                break
+
+        return os.path.join(self.get_dot_svn_path(), url)
+    #
+    #
+    #
+    #
+    #
+
+    #######################
+    # TODO Better place for utility methods?? {{
+    # Shouldn't rely on Git.dot()
     @staticmethod
-    def get_dot_svn_path(branch):
+    def get_dot_svn_path():
         git = GGitConfig.get_ggit_path()
-        return os.path.join(git, 'svn', branch)
+        return os.path.join(git, 'svn')
 
     @staticmethod
     def get_ggit_path():
@@ -397,6 +512,9 @@ class GGitConfig():
     def get_config_path():
         git = Git.dot_git()
         return os.path.join(git, 'ggit', 'config')
+    #
+    # TODO Better place for utility methods?? }}
+    #######################
 
     def switch_svn(self, url, rev):
         '''
@@ -419,9 +537,7 @@ class GGitConfig():
         creates new files in the .svn folder they will be deleted on switch. We
         only maintain the folders and files from the original svn checkout.
         '''
-
-        branch = self.url_to_branch(url)
-        svn_path = self.get_dot_svn_path(branch)
+        svn_path = self.url_to_svn_cache(url)
 
         if os.path.exists('.svn'):
             shutil.rmtree('.svn')
@@ -464,7 +580,8 @@ class GGitConfig():
         check_call('echo .svn >> ' + exclude)
 
         config_path = self.get_config_path()
-        self.write(config_path)
+        with open(config_path, 'w+') as fp:
+            self.write(fp)
 
     def setup_git_svn(self):
         git = Git.dot_git()
@@ -513,30 +630,23 @@ class GGitConfig():
                     lines = lines[0:-1]
                 fp.writelines(lines)
 
-        def write_new_entry(fp):
-            fetches = ((remote, branch) for (branch, remote) in
-                       self.branches.items())
-            config = GitSvnConfig.fill_template(self.url, fetches)
-            fp.write(autogen_head)
-            fp.write(config)
-            fp.write(autogen_tail)
-
         with open(os.path.join(git, 'config'), 'r+') as fp:
             remove_old_entry(fp)
             fp.seek(0, 2)
-            write_new_entry(fp)
+            self.write(fp)
 
     def setup_empty_svn(self):
-        for branch in self.branches:
-            svn_path = self.get_dot_svn_path(branch)
-            svn_url = self.branch_to_url(branch)
-            if os.path.lexists(svn_path):
-                shutil.rmtree(svn_path)
+        for remote in self.remotes:
+            for svn_url in remote.urls:
+                svn_path = self.url_to_svn_cache(svn_url)
 
-            with TemporaryDirectory() as td:
-                check_call('svn co --depth=empty "{url}" "{tmpdir}"'
-                           .format(url=svn_url, tmpdir=td.dir))
-                shutil.copytree(os.path.join(td.dir, '.svn'), svn_path)
+                if os.path.lexists(svn_path):
+                    shutil.rmtree(svn_path)
+
+                with TemporaryDirectory() as td:
+                    check_call('svn co --depth=empty "{url}" "{tmpdir}"'
+                               .format(url=svn_url, tmpdir=td.dir))
+                    shutil.copytree(os.path.join(td.dir, '.svn'), svn_path)
 
 
 class Subcommand(object):
@@ -806,6 +916,8 @@ class Push(Subcommand):
 #             print(line)
 #         return EXIT_CODE.SUCCESS
 
+# TODO Command to forward args to git svn fetch
+# TODO Command to forward args to git svn rebase, and run svn update afterwards
 # TODO Command to create a gcrucible diff
 # TODO Command to initialize a new repository with svn url and branches. (REQ)
 # TODO Command to automate updating a repository with git-svn data (REQ)
