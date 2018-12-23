@@ -74,6 +74,7 @@ class Status:
 class GGitExcpetion(Exception):
     def __init__(self, status, msg=None):
         self.status = status
+        self.msg = msg
         Exception.__init__(self, msg)
 
 class TemporaryDirectory(object):
@@ -203,10 +204,10 @@ class Git:
     def toplevel():
         try:
             output = call_output('git rev-parse --show-toplevel',
-                    stderr=subprocess.PIPE).rstrip()
+                    stderr=subprocess.STDOUT).rstrip()
             return output
         except subprocess.CalledProcessError as e:
-            raise GGitExcpetion(Status.NotInRepo, e.msg)
+            raise GGitExcpetion(Status.NotInRepo, e.output)
 
     @staticmethod
     def dot_git():
@@ -718,7 +719,7 @@ class Clone(Subcommand):
 class Switch(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('hashish')
-        parser.add_argument('--force')
+        parser.add_argument('--force', action='store_true')
 
     def run(self, args):
         force = args['force']
@@ -730,7 +731,7 @@ class Switch(Subcommand):
 
         # Check that the working directory is clean.
         if Git.working_is_dirty() and not force:
-            raise GGitExcpetion(Status.RepoIsDirty)
+            raise GGitExcpetion(Status.RepoIsDirty, DIRTY_WORKING)
 
         if not Git.commit_exists(hashish):
             raise GGitExcpetion(Status.NoSuchCommit, 
