@@ -69,7 +69,6 @@ class Status:
     AmbiguousReference = 5
     NoSuchCommit = 6
     NonSvnCommit = 7
-
     Error = 100
 
 
@@ -99,7 +98,7 @@ def _preoprocess_call(*args, **kwargs):
     kwargs.setdefault('stdout', subprocess.PIPE)
     kwargs.setdefault('stderr', subprocess.STDOUT)
 
-    pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
+    # pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
     return args, kwargs
 
 
@@ -111,6 +110,16 @@ def call_output(*args, **kwargs):
     return subprocess.check_output(*args, **kwargs)
 
 
+def forward_check_call(*args, **kwargs):
+    kwargs.setdefault('stdout', None)
+    kwargs.setdefault('stderr', None)
+    args, kwargs = _preoprocess_call(*args, **kwargs)
+    print()
+    print('>> ' + args[0])
+    print()
+    return subprocess.check_call(*args, **kwargs)
+
+
 def check_call(*args, **kwargs):
     args, kwargs = _preoprocess_call(*args, **kwargs)
     return subprocess.check_call(*args, **kwargs)
@@ -119,6 +128,13 @@ def check_call(*args, **kwargs):
 def call_status(*args, **kwargs):
     args, kwargs = _preoprocess_call(*args, **kwargs)
     return subprocess.call(*args, **kwargs)
+
+
+###############################################################################
+#
+# Lower level git utilities
+#
+###############################################################################
 
 
 class Git:
@@ -254,6 +270,46 @@ class Git:
             return matches[0]
 
 
+class GitSvnLogEntry:
+    # git-svn-id: \
+    # http://rtosvc/trunk/rtos@274190 d5d84855-3516-0410-9f1e-893281b4b339
+    SVN_ENTRY_REGEX = re.compile(
+            r'\s*git-svn-id:\s+(?P<url>[^@]+)@(?P<rev>\d+)'
+            r'\s+(?P<svn_uuid>[0-9a-z\-]+)')
+
+    # commit 3505cb1adc010f7dcf18247846fe09d7353acb9c
+    GIT_ENTRY_REGEX = re.compile('commit (?P<hash>[0-9a-z]+)')
+
+    def __init__(self, url, rev, git_uuid, svn_uuid):
+        self.url = url
+        self.revision = rev
+        self.git_hash = git_uuid
+        self.git_svn_hash = svn_uuid
+
+    @classmethod
+    def find_entry(cls, line_iter):
+        # Keep a running log of git hashes,
+        # Since git hashes are before git-svn entries, once we find a git-svn
+        # entry the most recent git hash goes with the svn entry.
+        for line in line_iter:
+            git_match = cls.GIT_ENTRY_REGEX.match(line)
+            svn_match = cls.SVN_ENTRY_REGEX.match(line)
+            if git_match:
+                git_uuid = git_match.groups(1)
+            if svn_match:
+                match = svn_match.groupdict()
+                match['git_uuid'] = git_uuid
+                return GitSvnLogEntry(**match)
+        return None
+
+
+###############################################################################
+#
+# Config file items
+#
+###############################################################################
+
+
 class GitSvnRemote():
     template = '''
     [svn-remote "{name}"]
@@ -364,39 +420,6 @@ class GitConfigParser(object):
                 self.parsed_options[cur_section].setdefault(key, [])
                 self.parsed_options[cur_section][key].append(val)
         return self
-
-
-class GitSvnLogEntry:
-    # git-svn-id: \
-    # http://rtosvc/trunk/rtos@274190 d5d84855-3516-0410-9f1e-893281b4b339
-    SVN_ENTRY_REGEX = re.compile(
-            r'\s*git-svn-id:\s+(?P<url>[^@]+)@(?P<rev>\d+)'
-            r'\s+(?P<svn_uuid>[0-9a-z\-]+)')
-
-    # commit 3505cb1adc010f7dcf18247846fe09d7353acb9c
-    GIT_ENTRY_REGEX = re.compile('commit (?P<hash>[0-9a-z]+)')
-
-    def __init__(self, url, rev, git_uuid, svn_uuid):
-        self.url = url
-        self.revision = rev
-        self.git_hash = git_uuid
-        self.git_svn_hash = svn_uuid
-
-    @classmethod
-    def find_entry(cls, line_iter):
-        # Keep a running log of git hashes,
-        # Since git hashes are before git-svn entries, once we find a git-svn
-        # entry the most recent git hash goes with the svn entry.
-        for line in line_iter:
-            git_match = cls.GIT_ENTRY_REGEX.match(line)
-            svn_match = cls.SVN_ENTRY_REGEX.match(line)
-            if git_match:
-                git_uuid = git_match.groups(1)
-            if svn_match:
-                match = svn_match.groupdict()
-                match['git_uuid'] = git_uuid
-                return GitSvnLogEntry(**match)
-        return None
 
 
 class GGitConfig():
@@ -540,6 +563,12 @@ class GGitConfigWriter():
             fp.writelines(lines)
 
 
+###############################################################################
+#
+# High level operations
+#
+###############################################################################
+
 class GGit(object):
     @staticmethod
     def switch_svn(config, url, rev):
@@ -574,9 +603,9 @@ class GGit(object):
             os.symlink(os.path.join(svn_path, f), os.path.join('.svn', f))
 
         # Run svn update to set the revision and depth.
-        check_call('svn update -q --force --accept working'
-                   ' --set-depth=infinity -r {rev}'
-                   ''.format(rev=rev))
+        forward_check_call('svn update --force --accept working'
+                           ' --set-depth=infinity -r {rev}'
+                           ''.format(rev=rev))
         # Run svn revert to clean to a known svn state.
         # check_call('svn revert -q -R .')
 
@@ -632,6 +661,13 @@ class GGit(object):
                     check_call('svn co --depth=empty "{url}" "{tmpdir}"'
                                .format(url=svn_url, tmpdir=td.dir))
                     shutil.copytree(os.path.join(td.dir, '.svn'), svn_path)
+
+
+###############################################################################
+#
+# User level commands
+#
+###############################################################################
 
 
 class Subcommand(object):
@@ -691,8 +727,8 @@ class Clone(Subcommand):
             raise GGitExcpetion(Status.PathExists,
                                 "Destination: '%s' already exists" % directory)
 
-        check_call('git clone {repo} {directory}'
-                   .format(repo=repository, directory=directory))
+        forward_check_call('git clone {repo} {directory}'
+                           .format(repo=repository, directory=directory))
 
         with Chdir(directory):
             config = Configure().run(args)
@@ -861,17 +897,19 @@ class Push(Subcommand):
         Git.enforce_in_repo()
 
         # Read the ggitconfig for branch names
-        check_call('git push {remote}'
-                   ' "refs/remotes/svn/{pfx}*'
-                   ':refs/heads/{pfx}*"'
-                   .format(remote=remote))
+        forward_check_call('git push {remote}'
+                           ' "refs/remotes/{pfx}*'
+                           ':refs/heads/{pfx}*"'
+                           .format(remote=remote,
+                                   pfx=GGIT_FOLDER))
 
         local_ref = Git.find_config_branch()
-        check_call('git push {remote} {local_ref}:refs/heads/{config_branch}'
-                   .format(local_ref=local_ref,
-                           pfx=GGIT_FOLDER,
-                           config_branch=GGIT_CONFIG_BRANCH,
-                           remote=remote))
+        forward_check_call('git push {remote}'
+                           ' {local_ref}:refs/heads/{config_branch}'
+                           .format(local_ref=local_ref,
+                                   pfx=GGIT_FOLDER,
+                                   config_branch=GGIT_CONFIG_BRANCH,
+                                   remote=remote))
 
 #
 # TODO Verity Works
