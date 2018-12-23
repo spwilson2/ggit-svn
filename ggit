@@ -90,7 +90,7 @@ class Git:
     @staticmethod
     def in_a_repo():
         try:
-            check_output('git rev-parse --show-toplevel')
+            check_output('git rev-parse --show-toplevel', stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
             return (False, e.msg)
         return (True, None)
@@ -131,30 +131,31 @@ class Git:
                 kwargs['universal_newlines'] = True
 
         git = subprocess.Popen(('git log %s' % hashish).split(), **kwargs)
-        entry = None
+        line_iter = iter(git.stdout.readline, '')
 
+        entry = None
         def get_entry(line_iter):
             global entry
             entry = GitSvnLogEntry.find_entry(line_iter)
 
-        line_iter = iter(git.stdout.readline, '')
         thread = threading.Thread(target=get_entry, args=(line_iter,))
         thread.start()
-
         git.communicate()
         thread.join()
 
-        # Thread is complete, we can touch entry without racing.
         return entry
 
     @staticmethod
     def toplevel():
-        output = check_output('git rev-parse --show-toplevel')
-        return output
+        try:
+            output = check_output('git rev-parse --show-toplevel')
+            return output
+        except subprocess.CalledProcessError as e:
+            raise GGitExcpetion(Status.NotInRepo, e.msg)
 
     @staticmethod
     def dot_git():
-        return os.path.join(Git.toplevel, '.git')
+        return os.path.join(Git.toplevel()), '.git')
 
     @staticmethod
     def basename(repository):
@@ -333,7 +334,6 @@ class GitSvnLogEntry:
 
 
 class GGitConfig():
-
     def __init__(self, url, branches):
         '''
         :param url: Base url of the svn respository
@@ -367,15 +367,18 @@ class GGitConfig():
         return GGitConfig(url, branches)
 
     @classmethod
-    def from_branch(cls):
-        config = check_output('git show {remote}/{branch}:config'
-                .format(remote=remote, branch=config_branch))
+    def from_branch(cls, branch):
+        try:
+            config = check_output('git show %s:config' % branch)
+        except subprocess.CalledProcessError as e:
+            raise GGitExcpetion(Status.Error, 
+                    'Failed to get ggit "config" file from config branch "%s"'
+                        % branch)
         return cls.from_str(config)
 
     @classmethod
     def from_dot_git(cls):
-        Git.toplevel()
-        with open(Git.dot_git(), 'r') as f:
+        with open(cls.get_config_path(), 'r') as f:
             config = f.read()
         return cls.from_str(config)
 
@@ -587,7 +590,7 @@ class Switch(Subcommand):
         Git.enforce_in_repo()
 
         # Check that the working directory is clean.
-        if not Git.is_clean() and not force:
+        if Git.is_dirty() and not force:
             raise GGitExcpetion(Status.RepoIsDirty)
 
         # Search the log for latest git-svn commit
@@ -657,7 +660,6 @@ class Configure(Subcommand):
             print(self.NON_GIT_HEAD)
         else:
             config.switch_svn(log_entry.url, log_entry.revision)
-
 
 # TODO Command to create a gcrucible diff
 # TODO Command to initialize a new repository with svn url and branches. (REQ)
