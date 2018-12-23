@@ -408,6 +408,17 @@ class GitSvnLogEntry:
 class GGitConfig():
     _SVN_REMOTE_RE = re.compile(r'svn-remote\s*"(.*)"')
 
+    _AUTOGEN_HEAD = textwrap.dedent('''
+    # {{ ggit:{version}
+    # This section has been automatically modfied by ggit.
+    # Take care when removing it
+    '''.format(version=VERSION))
+
+    _AUTOGEN_TAIL = textwrap.dedent('''
+    # }} ggit:{version}
+    '''.format(version=VERSION))
+
+
     def __init__(self):
         self.remotes = []
         self._config_parser = None
@@ -580,24 +591,14 @@ class GGitConfig():
         check_call('echo .svn >> ' + exclude)
 
         config_path = self.get_config_path()
-        with open(config_path, 'w+') as fp:
+        with open(config_path, 'w') as fp:
             self.write(fp)
 
     def setup_git_svn(self):
         git = Git.dot_git()
 
-        autogen_head = textwrap.dedent('''
-        # {{ ggit:{version}
-        # This section has been automatically modfied by ggit.
-        # Take care when removing it
-        '''.format(version=VERSION))
-
-        autogen_tail = textwrap.dedent('''
-        # }} ggit:{version}
-        '''.format(version=VERSION))
-
-        head_re = re.compile(r'# *{ *ggit:\d+')
-        tail_re = re.compile(r'# *} *ggit:\d+')
+        head_re = re.compile(r'#\s*{\s*ggit:\d+')
+        tail_re = re.compile(r'#\s*}\s*ggit:\d+')
 
         # Setup the .git/config fetches based on ggit-config file
         #   (Possibly replacing old version. Use a begin and end statement to
@@ -633,7 +634,9 @@ class GGitConfig():
         with open(os.path.join(git, 'config'), 'r+') as fp:
             remove_old_entry(fp)
             fp.seek(0, 2)
+            fp.write(self._AUTOGEN_HEAD)
             self.write(fp)
+            fp.write(self._AUTOGEN_TAIL)
 
     def setup_empty_svn(self):
         for remote in self.remotes:
@@ -713,13 +716,14 @@ class Clone(Subcommand):
             Configure().run(args)
 
             # Create local branches for all remote git-svn branches.
-            check_call('git fetch origin "refs/heads/{pfx}*:refs/heads/{pfx}*"'
-                       .format(pfx=GGIT_FOLDER))
+            #check_call('git fetch origin "refs/heads/{pfx}*:refs/heads/{pfx}*"'
+            #           .format(pfx=GGIT_FOLDER))
 
-            # Setup git svn
-            check_call('git fetch origin "refs/heads/{pfx}*'
-                       ':refs/remotes/svn/{pfx}*"'
-                       .format(pfx=GGIT_FOLDER))
+            #TODO/FIXME
+            ## Setup git svn
+            #check_call('git fetch origin "refs/heads/{pfx}*'
+            #           ':refs/remotes/svn/{pfx}*"'
+            #           .format(pfx=GGIT_FOLDER))
 
 
 class Switch(Subcommand):
