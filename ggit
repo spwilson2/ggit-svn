@@ -198,21 +198,20 @@ class Git:
           in .git/refs/heads and .git/refs/remotes, if not local, but in multiple
           remotes fail.
         '''
-        root = Git.toplevel()
-        assert root
+        dot_git = Git.dot_git()
 
         def trim_path(path):
-            common = os.path.commonprefix((root, path))
-            return path[len(common):]
+            common = os.path.commonprefix((dot_git, path))
+            return path[len(common):].lstrip('/')
 
         matches = []
-        for root, dirs, files in os.walk(os.path.join(root, '.git', 'refs')):
+        for root, dirs, files in os.walk(os.path.join(dot_git, 'refs')):
             for f in files:
                 name = os.path.basename(f)
                 if name == GGIT_CONFIG_BRANCH:
-                    matches.append(trim_path(f))
+                    matches.append(trim_path(os.path.join(root, f)))
 
-        local_config_branch = 'refs/heads' + GGIT_CONFIG_BRANCH
+        local_config_branch = 'refs/heads/' + GGIT_CONFIG_BRANCH
 
         if local_config_branch in matches:
             return local_config_branch
@@ -333,9 +332,10 @@ class Initialize(Subcommand):
             Configure().run(args)
             check_call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
 
+
 class Push(Subcommand):
     '''
-    Push git-svn branches to a remote.
+    Push git-svn branches and ggit-config to a remote.
     '''
     def init_parser(self, parser):
         parser.add_argument('remote')
@@ -351,6 +351,12 @@ class Push(Subcommand):
                 ' refs/remotes/svn/git-svn/*'
                 ':refs/heads/git-svn/*'
                 .format(remote=remote))
+
+        local_ref = Git.find_config_branch()
+        check_call('git push {remote} {local_ref}:refs/heads/{config_branch}'
+                .format(local_ref=local_ref,
+                    config_branch=GGIT_CONFIG_BRANCH,
+                    remote=remote))
 #
 #
 #class GenerateIgnore(Subcommand):
@@ -639,8 +645,8 @@ class Clone(Subcommand):
         ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
                 .format(remote=repository, ref=ref))
         if ret != 0:
-            print('The remote "%s" does not have a ggit config branch "%s"'
-                    % (remote, ref))
+            print("The repository '%s' does not ggit config branch '%s'"
+                    % (repository, ref))
             raise GGitExcpetion(Status.NoConfigBranch)
 
         # If no local folder name provided, use git's naming scheme.
