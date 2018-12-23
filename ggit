@@ -105,6 +105,12 @@ def call_output(*args, **kwargs):
     del kwargs['stdout']
     return subprocess.check_output(*args, **kwargs)
 
+def long_check_call(*args, **kwargs):
+    kwargs.setdefault('stdout', None)
+    kwargs.setdefault('stderr', None)
+    args, kwargs = _preoprocess_call(*args, **kwargs)
+    return subprocess.check_call(*args, **kwargs)
+
 def check_call(*args, **kwargs):
     args, kwargs = _preoprocess_call(*args, **kwargs)
     return subprocess.check_call(*args, **kwargs)
@@ -565,7 +571,7 @@ class GGitConfig():
             os.symlink(os.path.join(svn_path, f), os.path.join('.svn',f))
 
         # Run svn update to set the revision and depth.
-        check_call( 'svn update -q --force --accept working'
+        long_check_call( 'svn update --force --accept working'
                 ' --set-depth=infinity -r {rev}'
                 ''.format(rev=rev))
         # Run svn revert to clean to a known svn state.
@@ -697,18 +703,13 @@ class Clone(Subcommand):
             raise GGitExcpetion(Status.PathExists, 
                     "Destination: '%s' already exists" % directory)
 
-        check_call('git clone {repo} {directory}'
+        long_check_call('git clone {repo} {directory}'
                 .format(repo=repository, directory=directory))
 
         with Chdir(directory):
             Configure().run(args)
 
-            # Create local branches for all remote git-svn branches.
-            check_call('git fetch origin'
-                    ' refs/heads/git-svn/*'
-                    ':refs/heads/git-svn/*')
-
-            # Setup git svn
+            # Setup git svn fetches
             check_call('git fetch origin'
                     ' refs/heads/git-svn/*'
                     ':refs/remotes/svn/git-svn/*')
