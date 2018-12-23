@@ -49,12 +49,10 @@ class Status:
     RepoIsDirty = 4
     AmbiguousReference = 5
 
+class GGitExcpetion(Exception):
     def __init__(self, status, msg=None):
-        self.val = status
-        self.msg = msg
-
-OK = Status(None)
-
+        self.status = status
+        Exception.__init__(self, msg)
 
 class TemporaryDirectory(object):
     def __enter__(self):
@@ -94,8 +92,14 @@ class Git:
         try:
             check_output('git rev-parse --show-toplevel')
         except subprocess.CalledProcessError as e:
-            return Status(Status.NotInRepo, e.msg)
-        return OK
+            return (False, e.msg)
+        return (True, None)
+
+    @staticmethod
+    def enforce_in_repo():
+        (status, msg) = Git.in_a_repo()
+        if not status:
+            raise GGitExcpetion(Status.NotInRepo, msg)
 
     @staticmethod
     def enforce_clean():
@@ -468,7 +472,6 @@ class GGitConfig():
         head_re = re.compile(r'#\w*{\w*ggit:\d+')
         tail_re = re.compile(r'#\w*}\w*ggit:\d+')
 
-
         # Setup the .git/config fetches based on ggit-config file
         #   (Possibly replacing old version. Use a begin and end statement to mark for
         #   easy scripting.)
@@ -479,24 +482,23 @@ class GGitConfig():
                 lines.append(line)
                 if head_re.search(line):
                     if old_head is not None:
-                        return Status(Status.GitConfigError)
+                        raise GGitExcpetion(Status.GitConfigError)
                     old_head = idx
                 if tail_re.search(line):
                     if old_tail is not None:
-                        return Status(Status.GitConfigError)
+                        raise GGitExcpetion(Status.GitConfigError)
                     old_tail = idx
 
             old_idx = (old_head, old_tail)
             if not all(old_idx) and any(old_idx):
-                return Status(Status.GitConfigError)
+                raise GGitExcpetion(Status.GitConfigError)
             if old_tail < old_head:
-                return Status(Status.GitConfigError)
+                raise GGitExcpetion(Status.GitConfigError)
             if old_head:
                 lines = lines[:old_head] + lines[old_tail+1:]
                 # rewind file, write lines from beginning
                 fp.seek(0, 0)
                 fp.writelines(lines)
-            return OK
 
         def write_new_entry(fp):
             fetches = ((remote, branch) for (branch,remote) in 
@@ -507,9 +509,7 @@ class GGitConfig():
             fp.write(autogen_tai)
 
         with open(os.path.join(git, 'config'), 'r+') as fp:
-            status = remove_old_entry(fp)
-            if status is not OK:
-                return status
+            remove_old_entry(fp)
             fp.seek(2, 0)
             write_new_entry(fp)
 
@@ -554,7 +554,7 @@ class Clone(Subcommand):
         if ret != 0:
             print('The remote "%s" does not have a ggit config branch "%s"'
                     % (remote, ref))
-            return Status(Status.NoConfigBranch)
+            raise GGitExcpetion(Status.NoConfigBranch)
 
         # If no local folder name provided, use git's naming scheme.
         if directory is None:
@@ -565,7 +565,6 @@ class Clone(Subcommand):
 
         check_call('git clone {repo} {directory}'
                 .format(repo=repository, directory=directory))
-
 
         with Chdir(directory):
             Configure().run(args)
@@ -585,13 +584,11 @@ class Switch(Subcommand):
         hashish = args['hashish']
 
         # Check that we are in a git repo.
-        status = Git.in_a_repo()
-        if status is OK:
-            return status
+        Git.enforce_in_repo()
 
         # Check that the working directory is clean.
         if not Git.is_clean() and not force:
-            return Status(Status.RepoIsDirty)
+            raise GGitExcpetion(Status.RepoIsDirty)
 
         # Search the log for latest git-svn commit
         log_entry = Git.latest_svn_commit(hashish)
@@ -613,9 +610,7 @@ class Configure(Subcommand):
         Read from the ggit-config branch and configure the git repository to match.
         '''
         # Check that we are in a git repo.
-        status = Git.in_a_repo()
-        if status is OK:
-            return status
+        Git.enforce_in_repo()
 
         # Check that the ggit-config branch exists locally or as a remote by looking
         #   in .git/refs/heads and .git/refs/remotes, if not local, but in multiple
@@ -636,7 +631,7 @@ class Configure(Subcommand):
             if local_config_branch in matches:
                 return local_config_branch
             if len(matches) > 1:
-                return Status(Status.AmbiguousReference)
+                raise GGitExcpetion(Status.AmbiguousReference)
             return matches[0]
 
         branch = find_config_branch()
@@ -660,7 +655,6 @@ class Configure(Subcommand):
         log_entry = most_recent_svn_commit()
         if log_entry is None:
             print(self.NON_GIT_HEAD)
-            return
         else:
             config.switch_svn(log_entry.url, log_entry.revision)
 
@@ -679,7 +673,8 @@ def parse_args():
 def main(command, args):
     # TODO Assert user had git-svn installed.
     # Check the subparser used, pass the args to the class named after it.
-    return Subcommand.run_command(command, args)
+    Subcommand.run_command(command, args)
+    return 0
 
 if __name__ == '__main__':
     parsed = parse_args()
