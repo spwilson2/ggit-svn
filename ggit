@@ -23,13 +23,15 @@ GGIT_CONFIG_BRANCH =  'ggit-config'
 
 NON_GIT_HEAD = textwrap.dedent('''
     The HEAD is not pointing to a git-svn branch.
-    In order to setup a .svn folder switch branches with ggit:
+
+    In order to setup a .svn folder, switch branches with ggit:
 
         ggit switch <branch-name>
 
 ''')
 DIRTY_WORKING = textwrap.dedent('''
 Refusing to change branches, working directory is dirty.
+
 Consider stashing changes:
 
     git stash --include-untracked
@@ -64,6 +66,8 @@ class Status:
     PathExists = 3
     RepoIsDirty = 4
     AmbiguousReference = 5
+    NoSuchCommit = 6
+    NonSvnCommit = 7
 
     Error = 100
 
@@ -110,9 +114,11 @@ def call_status(*args, **kwargs):
     return subprocess.call(*args, **kwargs)
 
 class Git:
+    UUID_RE = '[0-9a-z]'
+
     @staticmethod
     def staging_is_dirty():
-        ret = call_status('git diff-index --cached --quiet HEAD --ignore-submodules --')
+        ret = call_status('git diff --cached --quiet --ignore-submodules --')
         return bool(ret)
 
     @staticmethod
@@ -120,7 +126,7 @@ class Git:
         ret = call_status('git ls-files --other --directory --exclude-standard'
                 '| sed q1',
                 shell=True)
-        return not bool(ret)
+        return bool(ret)
 
     @staticmethod
     def is_dirty():
@@ -146,6 +152,20 @@ class Git:
             raise GGitExcpetion(Status.RepoIsDirty, DIRTY_WORKING)
 
     @staticmethod
+    def list_heads():
+        output = call_output('git branch -a')
+        heads = []
+        for line in output.splitlines():
+            heads.append(line.rstrip().lstrip())
+        return heads
+
+    @staticmethod
+    def commit_exists(hashish):
+        ret = call_status('git cat-file -e {hashish}^{{commit}}'
+                .format(hashish=hashish))
+        return not bool(ret)
+
+    @staticmethod
     def latest_svn_commit(hashish):
         '''
         Check the git log for the latest git-svn log entry. Return a GitSvnLogEntry
@@ -153,7 +173,8 @@ class Git:
         '''
         kwargs = { 
                 'stdout': subprocess.PIPE,
-                'stderr': None,
+                'stderr': subprocess.PIPE,
+                'shell': False,
         }
         args = (('git log %s' % hashish).split(),)
         (args, kwargs) = _preoprocess_call(*args, **kwargs)
@@ -161,17 +182,16 @@ class Git:
         git = subprocess.Popen(*args, **kwargs)
         line_iter = iter(git.stdout.readline, '')
 
-        entry = None
-        def get_entry(line_iter):
-            global entry
-            entry = GitSvnLogEntry.find_entry(line_iter)
+        entry = [None] # Use a mutable object so thread can mutate it.
+        def get_entry(line_iter, entry_list):
+            entry_list[0] = GitSvnLogEntry.find_entry(line_iter)
 
-        thread = threading.Thread(target=get_entry, args=(line_iter,))
+        thread = threading.Thread(target=get_entry, args=(line_iter,entry))
         thread.start()
-        git.communicate()
         thread.join()
+        git.communicate()
 
-        return entry
+        return entry[0]
 
     @staticmethod
     def toplevel():
@@ -188,7 +208,7 @@ class Git:
 
     @staticmethod
     def basename(repository):
-        base = os.path.basename(respository)
+        base = os.path.basename(repository)
         return re.sub(r'.git$', '', base)
 
     @staticmethod
@@ -198,18 +218,12 @@ class Git:
           in .git/refs/heads and .git/refs/remotes, if not local, but in multiple
           remotes fail.
         '''
-        dot_git = Git.dot_git()
-
-        def trim_path(path):
-            common = os.path.commonprefix((dot_git, path))
-            return path[len(common):].lstrip('/')
-
+        heads = Git.list_heads()
         matches = []
-        for root, dirs, files in os.walk(os.path.join(dot_git, 'refs')):
-            for f in files:
-                name = os.path.basename(f)
-                if name == GGIT_CONFIG_BRANCH:
-                    matches.append(trim_path(os.path.join(root, f)))
+        for head in heads:
+            branch = Git.basename(head)
+            if branch == GGIT_CONFIG_BRANCH:
+                matches.append(head)
 
         local_config_branch = 'refs/heads/' + GGIT_CONFIG_BRANCH
 
@@ -217,7 +231,7 @@ class Git:
             return local_config_branch
         if len(matches) > 1:
             raise GGitExcpetion(Status.AmbiguousReference)
-        if matches:
+        if heads:
             return matches[0]
 
 
@@ -398,8 +412,8 @@ class Push(Subcommand):
 class GitSvnLogEntry:
     # git-svn-id: http://rtosvc/trunk/rtos@274190 d5d84855-3516-0410-9f1e-893281b4b339
     SVN_ENTRY_REGEX = re.compile(
-            r'git-svn-id: (?P<url>[^@]+)@(?P<rev>\d+)'
-            r' (?P<svn_uuid>[0-9a-z\-]+)')
+            r'\s*git-svn-id:\s+(?P<url>[^@]+)@(?P<rev>\d+)'
+            r'\s+(?P<svn_uuid>[0-9a-z\-]+)')
 
     # commit 3505cb1adc010f7dcf18247846fe09d7353acb9c
     GIT_ENTRY_REGEX = re.compile('commit (?P<hash>[0-9a-z]+)')
@@ -421,7 +435,7 @@ class GitSvnLogEntry:
             if git_match:
                 git_uuid = git_match.groups(1)
             if svn_match:
-                match = svn_match.groupsdict()
+                match = svn_match.groupdict()
                 match['git_uuid'] = git_uuid
                 return GitSvnLogEntry(**match)
         return None
@@ -498,7 +512,8 @@ class GGitConfig():
     def url_to_branch(self, url):
         '''Given the url, convert it to a branch.'''
         for branch, path  in self.branches.items():
-            if url == self.url + '/' + path:
+            branch_url = self.url + '/' + path
+            if os.path.normpath(url) == os.path.normpath(branch_url):
                 return branch
 
     @staticmethod
@@ -517,19 +532,44 @@ class GGitConfig():
         return os.path.join(git, 'ggit', 'config')
 
     def switch_svn(self, url, rev):
-        branch = self.url_to_bramch(url)
-        # Replace the symlink .svn with one in .git/ggit/
+        '''
+        NOTE: There are a couple strange details when it comes to implementing
+        a fast switch call for svn.
+
+        One option would be to use svn switch.  There are a couple problems with
+        this approach.  First, .svn doesn't do a good job of keeping a lot of
+        state around, so on very different branches a switch will effectively be
+        a new clone.  Second, switch is still pretty broken when it comes to
+        switching svn externals across branches.  This often leads to a broken
+        .svn and would confuse users.
+
+        The second strange choice we have to deal with is the fact that
+        subversion doesn't use .svn if it is a symlink. So, rather than being
+        able to create a single symlink, we symlink all files in the .svn
+        folder. 
+        
+        The one issue that could arise with this approach is if subversion
+        creates new files in the .svn folder they will be deleted on switch. We
+        only maintain the folders and files from the original svn checkout.
+        '''
+
+        branch = self.url_to_branch(url)
         svn_path = self.get_dot_svn_path(branch)
+
         if os.path.exists('.svn'):
-            os.remove('.svn')
-        os.symlink(svn_path, '.svn')
+            shutil.rmtree('.svn')
+        # Create a .svn dir and symlink the files because subversion won't look
+        # at a symlink for it's .svn dir.
+        os.mkdir('.svn')
+        for f in os.listdir(svn_path):
+            os.symlink(os.path.join(svn_path, f), os.path.join('.svn',f))
 
         # Run svn update to set the revision and depth.
         check_call( 'svn update -q --force --accept working'
                 ' --set-depth=infinity -r {rev}'
                 ''.format(rev=rev))
         # Run svn revert to clean to a known svn state.
-        check_call('svn revert -q -R .')
+        #check_call('svn revert -q -R .')
 
     def _backup_ggit(self):
         ggit = self.get_ggit_path()
@@ -654,7 +694,8 @@ class Clone(Subcommand):
             directory = Git.basename(repository)
 
         if os.path.exists(directory):
-            return Status(Status.PathExists)
+            raise GGitExcpetion(Status.PathExists, 
+                    "Destination: '%s' already exists" % directory)
 
         check_call('git clone {repo} {directory}'
                 .format(repo=repository, directory=directory))
@@ -664,34 +705,51 @@ class Clone(Subcommand):
 
             # Create local branches for all remote git-svn branches.
             check_call('git fetch origin'
-                    ' refs/remotes/origin/git-svn/*'
+                    ' refs/heads/git-svn/*'
                     ':refs/heads/git-svn/*')
+
+            # Setup git svn
+            check_call('git fetch origin'
+                    ' refs/heads/git-svn/*'
+                    ':refs/remotes/svn/git-svn/*')
 
 
 class Switch(Subcommand):
     def init_parser(self, parser):
-        pass
+        parser.add_argument('hashish')
+        parser.add_argument('--force')
 
     def run(self, args):
         force = args['force']
         hashish = args['hashish']
+        force = '--force' if force else ''
 
         # Check that we are in a git repo.
         Git.enforce_in_repo()
 
         # Check that the working directory is clean.
-        if Git.is_dirty() and not force:
+        if Git.working_is_dirty() and not force:
             raise GGitExcpetion(Status.RepoIsDirty)
+
+        if not Git.commit_exists(hashish):
+            raise GGitExcpetion(Status.NoSuchCommit, 
+                    "The given commit '%s' doesn't exist." % hashish)
 
         # Search the log for latest git-svn commit
         log_entry = Git.latest_svn_commit(hashish)
 
-        # Check the .git/ggit/config file for the remote to .svn mapping.
-        config = GGitConfig.from_dot_git()
-        config.switch_svn(log_entry.url, log_entry.revision)
+        if log_entry is None:
+            raise GGitExcpetion(Status.NonSvnCommit, 
+                    "The given commit '%s' isn't on a git-svn repository."
+                    % hashish)
 
-        # Run git checkout to complete head change.
-        check_call('git checkout ' + hashish)
+        with Chdir(Git.toplevel()):
+            # Run git checkout to complete head change.
+            check_call('git checkout %s %s' % (force, hashish))
+
+            # Check the .git/ggit/config file for the remote to .svn mapping.
+            config = GGitConfig.from_dot_git()
+            config.switch_svn(log_entry.url, log_entry.revision)
 
 
 class Configure(Subcommand):
