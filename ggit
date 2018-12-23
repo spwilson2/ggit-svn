@@ -332,6 +332,25 @@ class Initialize(Subcommand):
 
             Configure().run(args)
             check_call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
+
+class Push(Subcommand):
+    '''
+    Push git-svn branches to a remote.
+    '''
+    def init_parser(self, parser):
+        parser.add_argument('remote')
+        # Todo support partial push
+
+    def run(self, args):
+        remote = args['remote']
+
+        Git.enforce_in_repo()
+
+        # Read the ggitconfig for branch names
+        check_call('git push {remote}'
+                ' refs/remotes/svn/git-svn/*'
+                ':refs/heads/git-svn/*'
+                .format(remote=remote))
 #
 #
 #class GenerateIgnore(Subcommand):
