@@ -15,7 +15,7 @@ import threading
 VERSION = 0
 
 GIT_CONFIG_FILE = 'config'
-GGIT_FOLDER = 'git-svn'
+GIT_SVN_PFX = 'svn/'
 GGIT_CONFIG_BRANCH = 'ggit-config'
 
 NON_GIT_HEAD = textwrap.dedent('''
@@ -69,6 +69,7 @@ class Status:
     AmbiguousReference = 5
     NoSuchCommit = 6
     NonSvnCommit = 7
+    InvalidArguments = 8
     Error = 100
 
 
@@ -711,11 +712,21 @@ class Clone(Subcommand):
         parser.add_argument('repository')
         parser.add_argument('directory', default=None)
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
+        parser.add_argument('--remap', default='svn/:',
+            help='Replace an svn fetch path from the gitconfig when fetching'
+            ' from origin')
 
     def run(self, args):
         repository = args['repository']
         directory = args['directory']
         config_branch = args['config_branch']
+        remap  = args['remap']
+        try:
+            remap_src, remap_dst = remap.split(':')
+        except ValueError:
+            raise GGitExcpetion(Status.InvalidArguments, '--remap expects "[]:[]" ')
+
+        ref = GGIT_CONFIG_BRANCH
 
         # Check that the remote has the ggit-config branch.
         ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
@@ -747,12 +758,13 @@ class Clone(Subcommand):
             for remote in config.remotes:
                 for branch in remote.branches:
                     branch = Git.branch_without_refs(branch)
-                    branches.append(branch)
+                    remote = re.sub(remap_src, remap_dst, branch, count=1)
+                    branches.append((remote, branch))
 
             # Setup git svn
-            for branch in branches:
+            for (remote, local) in branches:
                 check_call('git fetch origin "refs/heads/%s:refs/remotes/%s"'
-                           % (branch, branch))
+                           % (remote, local))
 
 
 class Switch(Subcommand):
@@ -909,9 +921,9 @@ class Push(Subcommand):
         # TODO: Read the ggitconfig for branch names
         forward_check_call('git push {remote}'
                            ' "refs/remotes/{pfx}*'
-                           ':refs/heads/{pfx}*"'
+                           ':refs/heads/*"'
                            .format(remote=remote,
-                                   pfx=GGIT_FOLDER))
+                                   pfx=GIT_SVN_PFX))
 
 
 #
