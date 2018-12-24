@@ -763,8 +763,8 @@ class Clone(Subcommand):
 
             # Setup git svn
             for (remote, local) in branches:
-                check_call('git fetch origin "refs/heads/%s:refs/remotes/%s"'
-                           % (remote, local))
+                forward_check_call('git fetch origin "refs/heads/%s:refs/remotes/%s"'
+                                   % (remote, local))
 
 
 class Switch(Subcommand):
