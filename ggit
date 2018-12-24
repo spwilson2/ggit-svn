@@ -248,24 +248,25 @@ class Git:
         return re.sub(r'.git$', '', base)
 
     @staticmethod
-    def find_config_branch():
+    def find_branch(search):
         '''
-        Check that the ggit-config branch exists locally or as a remote by if
-        not local, but in multiple remotes fail.
+        Check that the branch exists locally or as a remote by if not local,
+        but in multiple remotes fail.
         '''
         heads = Git.list_heads()
         matches = []
         for head in heads:
             branch = Git.basename(head)
-            if branch == GGIT_CONFIG_BRANCH:
+            if branch == search:
                 matches.append(head)
 
-        local_config_branch = 'refs/heads/' + GGIT_CONFIG_BRANCH
+        local_config_branch = 'refs/heads/' + search
 
         if local_config_branch in matches:
             return local_config_branch
         if len(matches) > 1:
-            raise GGitExcpetion(Status.AmbiguousReference)
+            raise GGitExcpetion(Status.AmbiguousReference,
+                                ', '.join(matches))
         if heads:
             return matches[0]
 
@@ -709,18 +710,23 @@ class Clone(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('repository')
         parser.add_argument('directory', default=None)
+        parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
 
     def run(self, args):
         repository = args['repository']
         directory = args['directory']
-        ref = GGIT_CONFIG_BRANCH
+        config_branch = args['config_branch']
 
         # Check that the remote has the ggit-config branch.
         ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
-                          .format(remote=repository, ref=ref))
+                          .format(remote=repository, ref=config_branch))
         if ret != 0:
-            print("The repository '%s' does not ggit config branch '%s'"
-                  % (repository, ref))
+            print(textwrap.dedent(
+                """
+                The repository '%s' does not ggit config branch '%s'
+                The branch can be set with the --config-branch optioon.
+                """
+                % (repository, config_branch)))
             raise GGitExcpetion(Status.NoConfigBranch)
 
         # If no local folder name provided, use git's naming scheme.
@@ -752,7 +758,7 @@ class Clone(Subcommand):
 class Switch(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('hashish')
-        parser.add_argument('--force')
+        parser.add_argument('--force', action='store_true')
 
     def run(self, args):
         force = args['force']
@@ -791,17 +797,18 @@ class Switch(Subcommand):
 
 class Configure(Subcommand):
     def init_parser(self, parser):
-        pass
+        parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
 
     def run(self, args):
         '''
         Read from the ggit-config branch and configure the git repository to
         match.
         '''
+        config_branch = args['config_branch']
         # Check that we are in a git repo.
         Git.enforce_in_repo()
 
-        branch = Git.find_config_branch()
+        branch = Git.find_branch(config_branch)
         config = GGitConfig.from_branch(branch)
 
         GGit.setup_git_svn_config(config)
@@ -852,7 +859,7 @@ class Initialize(Subcommand):
 
         with Chdir(Git.toplevel()):
             # If branch already exists, just checkout naturally.
-            if Git.find_config_branch() is not None:
+            if Git.find_branch(conf_branch) is not None:
                 check_call('git checkout {branch}'.format(branch=conf_branch))
             else:
                 check_call('git checkout --orphan {branch}'
@@ -882,27 +889,30 @@ class Push(Subcommand):
     '''
     def init_parser(self, parser):
         parser.add_argument('remote')
+        parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
         # TODO support partial push
 
     def run(self, args):
         remote = args['remote']
+        config_branch = args['config_branch']
 
         Git.enforce_in_repo()
 
-        # Read the ggitconfig for branch names
+        # Push the config branch
+        local_ref = Git.find_branch(config_branch)
+        forward_check_call('git push {remote}'
+                           ' {local_ref}:refs/heads/{config_branch}'
+                           .format(local_ref=local_ref,
+                                   config_branch=config_branch,
+                                   remote=remote))
+
+        # TODO: Read the ggitconfig for branch names
         forward_check_call('git push {remote}'
                            ' "refs/remotes/{pfx}*'
                            ':refs/heads/{pfx}*"'
                            .format(remote=remote,
                                    pfx=GGIT_FOLDER))
 
-        local_ref = Git.find_config_branch()
-        forward_check_call('git push {remote}'
-                           ' {local_ref}:refs/heads/{config_branch}'
-                           .format(local_ref=local_ref,
-                                   pfx=GGIT_FOLDER,
-                                   config_branch=GGIT_CONFIG_BRANCH,
-                                   remote=remote))
 
 #
 # TODO Verity Works
