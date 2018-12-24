@@ -197,7 +197,7 @@ class Git:
                 heads[remote].append(ref)
 
         local = call_output('git show-ref --heads'
-                ' || git rev-parse --show-toplevel')
+                ' || $(git rev-parse --show-toplevel > /dev/null)')
         for line in local.splitlines():
             if line:
                 _, ref = line.split()
@@ -903,17 +903,21 @@ class Initialize(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
         parser.add_argument('-r', '--revision', default='0')
+        parser.add_argument('--remote-base',
+                            default='refs/remotes/git-svn/svn')
         parser.add_argument('url')
         parser.add_argument('remote-names', nargs='+',
                             help='E.g. branches/ap/trunk:aptrunk')
 
-    def _parse_remotes(self, remotes):
+    def _parse_remotes(self, remotes, base):
         fetches = []
         for item in remotes:
             match = re.search('([^:]+):([^:]+)', item)
             if not match:
                 raise ValueError('Argument incorrect format')
-            fetches.append((match.group(2),  match.group(1)))
+            new_ref = os.path.join(base, match.group(2))
+
+            fetches.append(':'.join((match.group(1), new_ref)))
         return fetches
 
     def run(self, args):
@@ -921,6 +925,9 @@ class Initialize(Subcommand):
         remotes = args['remote-names']
         rev = args['revision']
         conf_branch = args['config_branch']
+        base = args['remote_base']
+
+        remotes = self._parse_remotes(remotes, base)
 
         # TODO Assert user has git-svn
         remote = GitSvnRemote('svn', url, remotes)
