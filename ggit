@@ -29,7 +29,7 @@ NON_GIT_HEAD = textwrap.dedent('''
 DIRTY_WORKING = textwrap.dedent('''
 Refusing to change branches, working directory is dirty.
 
-Consider stashing changes:
+Consider stashing changes or re-running with --force
 
     git stash --include-untracked
 
@@ -176,11 +176,6 @@ class Git:
         (status, msg) = Git.in_a_repo()
         if not status:
             raise GGitExcpetion(Status.NotInRepo, msg)
-
-    @staticmethod
-    def enforce_clean():
-        if Git.is_dirty():
-            raise GGitExcpetion(Status.RepoIsDirty, DIRTY_WORKING)
 
     @staticmethod
     def list_heads():
@@ -809,7 +804,7 @@ class Switch(Subcommand):
 
         # Check that the working directory is clean.
         if Git.working_is_dirty() and not force:
-            raise GGitExcpetion(Status.RepoIsDirty)
+            raise GGitExcpetion(Status.RepoIsDirty, DIRTY_WORKING)
 
         if not Git.commit_exists(hashish):
             raise GGitExcpetion(
@@ -830,6 +825,32 @@ class Switch(Subcommand):
             # Run git checkout to complete head change.
             check_call('git checkout %s %s' % (force, hashish))
 
+            # Check the .git/ggit/config file for the remote to .svn mapping.
+            GGit.switch_svn(Git.dot_git(), log_entry.url, log_entry.revision)
+
+
+class Sync(Subcommand):
+    '''
+    Update the svn repository to the latest svn commit on the current HEAD
+    '''
+    def init_parser(self, parser):
+        parser.add_argument('--force', action='store_true')
+
+    def run(self, args):
+        force = args['force']
+        Git.enforce_in_repo()
+
+        log_entry = Git.latest_svn_commit('HEAD')
+        if log_entry is None:
+            raise GGitExcpetion(
+                Status.NonSvnCommit,
+                "The current git branch doesn't contain git-svn history.")
+
+        # Check that the working directory is clean.
+        if Git.working_is_dirty() and not force:
+            raise GGitExcpetion(Status.RepoIsDirty, DIRTY_WORKING)
+
+        with Chdir(Git.toplevel()):
             # Check the .git/ggit/config file for the remote to .svn mapping.
             GGit.switch_svn(Git.dot_git(), log_entry.url, log_entry.revision)
 
