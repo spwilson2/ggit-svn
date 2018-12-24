@@ -154,6 +154,12 @@ class Git:
         return bool(ret)
 
     @staticmethod
+    def ref_exists_on_remote(remote, ref):
+        ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
+                          .format(remote=repository, ref=config_branch))
+        return not bool(ret)
+
+    @staticmethod
     def is_dirty():
         return any((Git.staging_is_dirty(), Git.working_is_dirty()))
 
@@ -718,21 +724,20 @@ class Clone(Subcommand):
         parser.add_argument('--remap', default='svn/:',
             help='Replace an svn fetch path from the gitconfig when fetching'
             ' from origin')
+        parser.add_argument('--fetch-gitsvn', action='store_true')
 
     def run(self, args):
         repository = args['repository']
         directory = args['directory']
         config_branch = args['config_branch']
+        fetch_svn = args['fetch_gitsvn']
         remap = args['remap']
         try:
             remap_src, remap_dst = remap.split(':')
         except ValueError:
             raise GGitExcpetion(Status.InvalidArguments, '--remap expects "[]:[]" ')
 
-        # Check that the remote has the ggit-config branch.
-        ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
-                          .format(remote=repository, ref=config_branch))
-        if ret != 0:
+        if not Git.ref_exists_on_remote(repository, config_branch):
             print(textwrap.dedent(
                 """
                 The repository '%s' does not ggit config branch '%s'
@@ -755,17 +760,26 @@ class Clone(Subcommand):
         with Chdir(directory):
             config = Configure().run(args)
 
-            branches = []
-            for remote in config.remotes:
-                for branch in remote.branches:
-                    branch = Git.branch_without_refs(branch)
-                    remote = re.sub(remap_src, remap_dst, branch, count=1)
-                    branches.append((remote, branch))
+            if fetch_svn:
+                branches = []
+                for remote in config.remotes:
+                    for branch in remote.branches:
+                        branch = Git.branch_without_refs(branch)
+                        remote = re.sub(remap_src, remap_dst, branch, count=1)
+                        branches.append((remote, branch))
 
-            # Setup git svn
-            for (remote, local) in branches:
-                forward_check_call('git fetch origin "refs/heads/%s:refs/remotes/%s"'
-                                   % (remote, local))
+                # Setup git svn
+                for (remote, local) in branches:
+                    if Git.ref_exists_on_remote('origin', remote):
+                        forward_check_call('git fetch origin "refs/heads/%s:'
+                                           'refs/remotes/%s"'
+                                           % (remote, local))
+                    else:
+                        print(textwrap.dedent(
+                            """
+                            Warning: git-svn branch '%s' doesn't exist on branch,
+                            Unable to resolve fetch for '%s'
+                            """ % (remote, local)))
 
 
 class Switch(Subcommand):
