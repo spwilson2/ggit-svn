@@ -15,7 +15,7 @@ import threading
 VERSION = 0
 
 GIT_CONFIG_FILE = 'config'
-GIT_SVN_PFX = 'svn/'
+GIT_SVN_PFX = 'git-svn/'
 GGIT_CONFIG_BRANCH = 'ggit-config'
 
 NON_GIT_HEAD = textwrap.dedent('''
@@ -76,6 +76,7 @@ class Status:
 class GGitExcpetion(Exception):
     def __init__(self, status, msg=None):
         self.status = status
+        self.msg = '\n' + msg
         Exception.__init__(self, msg)
 
 
@@ -195,7 +196,8 @@ class Git:
                 ref = ref[len(remote):].lstrip('/')
                 heads[remote].append(ref)
 
-        local = call_output('git show-ref --heads')
+        local = call_output('git show-ref --heads'
+                ' || git rev-parse --show-toplevel')
         for line in local.splitlines():
             if line:
                 _, ref = line.split()
@@ -253,10 +255,10 @@ class Git:
     def toplevel():
         try:
             output = call_output('git rev-parse --show-toplevel',
-                                 stderr=subprocess.PIPE).rstrip()
+                                 stderr=subprocess.STDOUT).rstrip()
             return output
         except subprocess.CalledProcessError as e:
-            raise GGitExcpetion(Status.NotInRepo, e.msg)
+            raise GGitExcpetion(Status.NotInRepo, e.output)
 
     @staticmethod
     def dot_git():
