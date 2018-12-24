@@ -897,12 +897,12 @@ class Initialize(Subcommand):
                             help='E.g. branches/ap/trunk:aptrunk')
 
     def _parse_remotes(self, remotes):
-        fetches = {}
+        fetches = []
         for item in remotes:
             match = re.search('([^:]+):([^:]+)', item)
             if not match:
                 raise ValueError('Argument incorrect format')
-            fetches[match.group(2)] = match.group(1)
+            fetches.append((match.group(2),  match.group(1)))
         return fetches
 
     def run(self, args):
@@ -912,7 +912,7 @@ class Initialize(Subcommand):
         conf_branch = args['config_branch']
 
         # TODO Assert user has git-svn
-        fetches = self._parse_remotes(remotes)
+        remote = GitSvnRemote('svn', url, remotes)
 
         Git.enforce_in_repo()
         # TODO Save the original HEAD so we can restore it.
@@ -927,7 +927,8 @@ class Initialize(Subcommand):
             check_call('git reset')
 
             # Create our config file
-            config = GGitConfig(url, fetches)
+            config = GGitConfig(Git.dot_git())
+            config.remotes.append(remote)
             config.write(GIT_CONFIG_FILE)
 
             # Check if the file is the same as the config if so, don't try
