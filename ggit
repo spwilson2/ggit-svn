@@ -244,8 +244,11 @@ class Git:
         return os.path.join(Git.toplevel(), '.git')
 
     @staticmethod
-    def basename(repository):
-        base = os.path.basename(repository)
+    def basename(repo):
+        if repo.endswith('.git'):
+            repo = repo[:len(repo) - len('.git')]
+        repo = repo.rstrip('/')
+        base = os.path.basename(repo)
         return re.sub(r'.git$', '', base)
 
     @staticmethod
@@ -710,7 +713,7 @@ class Subcommand(object):
 class Clone(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('repository')
-        parser.add_argument('directory', default=None)
+        parser.add_argument('directory', default=None, nargs='?')
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
         parser.add_argument('--remap', default='svn/:',
             help='Replace an svn fetch path from the gitconfig when fetching'
@@ -720,13 +723,11 @@ class Clone(Subcommand):
         repository = args['repository']
         directory = args['directory']
         config_branch = args['config_branch']
-        remap  = args['remap']
+        remap = args['remap']
         try:
             remap_src, remap_dst = remap.split(':')
         except ValueError:
             raise GGitExcpetion(Status.InvalidArguments, '--remap expects "[]:[]" ')
-
-        ref = GGIT_CONFIG_BRANCH
 
         # Check that the remote has the ggit-config branch.
         ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
