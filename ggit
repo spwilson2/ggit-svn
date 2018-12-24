@@ -483,18 +483,19 @@ class GGitConfig():
             config = f.read()
         return cls.from_str(dot_git, config)
 
-    def url_to_svn_cache(self, url):
+    @classmethod
+    def url_to_svn_cache(cls, dot_git, url):
         # Remove the protocol from the url
         for remote_type in REMOTE_TYPES:
             if url.startswith(remote_type):
                 url = url[len(remote_type):]
                 break
 
-        return os.path.join(self.dot_svn_path, url)
+        return os.path.join(cls.get_dot_svn_path(dot_git), url)
 
     @property
     def dot_svn_path(self):
-        return os.path.join(self.dot_git, 'svn')
+        return os.path.join(self.ggit_path, 'svn')
 
     @property
     def ggit_path(self):
@@ -503,6 +504,14 @@ class GGitConfig():
     @property
     def config_path(self):
         return self.get_config_path(self.dot_git)
+
+    @staticmethod
+    def get_ggit_path(dot_git):
+        return os.path.join(dot_git, 'ggit')
+
+    @classmethod
+    def get_dot_svn_path(cls, dot_git):
+        return os.path.join(cls.get_ggit_path(dot_git), 'svn')
 
     @staticmethod
     def get_config_path(dot_git):
@@ -571,7 +580,7 @@ class GGitConfigWriter():
 
 class GGit(object):
     @staticmethod
-    def switch_svn(config, url, rev):
+    def switch_svn(dot_git, url, rev):
         '''
         NOTE: There are a couple strange details when it comes to implementing
         a fast switch call for svn.
@@ -592,7 +601,7 @@ class GGit(object):
         creates new files in the .svn folder they will be deleted on switch. We
         only maintain the folders and files from the original svn checkout.
         '''
-        svn_path = config.url_to_svn_cache(url)
+        svn_path = GGitConfig.url_to_svn_cache(dot_git, url)
 
         if os.path.exists('.svn'):
             shutil.rmtree('.svn')
@@ -647,7 +656,7 @@ class GGit(object):
         '''
         for remote in config.remotes:
             for svn_url in remote.urls:
-                svn_path = config.url_to_svn_cache(svn_url)
+                svn_path = GGitConfig.url_to_svn_cache(config.dot_git, svn_url)
 
                 if os.path.lexists(svn_path):
                     shutil.rmtree(svn_path)
@@ -777,8 +786,7 @@ class Switch(Subcommand):
             check_call('git checkout %s %s' % (force, hashish))
 
             # Check the .git/ggit/config file for the remote to .svn mapping.
-            config = GGitConfig.from_dot_git(Git.dot_git())
-            GGit.switch_svn(config, log_entry.url, log_entry.revision)
+            GGit.switch_svn(Git.dot_git(), log_entry.url, log_entry.revision)
 
 
 class Configure(Subcommand):
@@ -804,8 +812,7 @@ class Configure(Subcommand):
         if log_entry is None:
             print(NON_GIT_HEAD)
         else:
-            GGit.switch_svn(config, log_entry.url, log_entry.revision)
-
+            GGit.switch_svn(config.dot_git, log_entry.url, log_entry.revision)
         return config
 
 
