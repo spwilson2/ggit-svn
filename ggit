@@ -506,7 +506,7 @@ class GGitConfig():
 
     @staticmethod
     def get_config_path(dot_git):
-        return os.path.join(dot_git, 'ggit', 'config')
+        return os.path.join(dot_git, 'config')
 
 
 class GGitConfigWriter():
@@ -625,7 +625,7 @@ class GGit(object):
                 shutil.move(f, backup_dir)
 
     @classmethod
-    def setup_ggit_config(cls, config):
+    def setup_git_svn_config(cls, config):
         # Create a .git/ggit/ folder backing up previous contents
         cls._backup_ggit(config.ggit_path)
 
@@ -633,12 +633,7 @@ class GGit(object):
         exclude = os.path.join(config.dot_git, 'info', 'exclude')
         check_call('echo .svn >> ' + exclude)
 
-        writer = GGitConfigWriter(config)
-        with open(config.config_path, 'w') as fp:
-            writer.write(fp)
-
-    @classmethod
-    def setup_git_svn_config(cls, config):
+        # Write the git config file.
         writer = GGitConfigWriter(config)
         with open(os.path.join(config.dot_git, 'config'), 'r+') as fp:
             writer.remove_old_entry(fp)
@@ -801,16 +796,7 @@ class Configure(Subcommand):
         branch = Git.find_config_branch()
         config = GGitConfig.from_branch(branch)
 
-        # Create a .git/ggit/ folder.
-        #   (Backup the previous contents if it exists.)
-        # Add .svn to the .git/info/exclude folder.
-        GGit.setup_ggit_config(config)
-
-        # Setup the .git/config fetches based on ggit-config file possibly
-        # overwriting the old version.
         GGit.setup_git_svn_config(config)
-
-        # Prepare the --depth=empty .svn folders within the .git/ggit/ folder
         GGit.setup_empty_svn(config)
 
         # Check if the current HEAD is a git svn branch.
