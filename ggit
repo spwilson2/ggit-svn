@@ -182,19 +182,25 @@ class Git:
         remotes = call_output('git remote show -n')
         remotes = remotes.splitlines()
 
+        remotes.append(None)
         heads = {remote:[] for remote in remotes}
         for remote in remotes:
-            refs = call_output('git ls-remote %s' % remote)
-            for line in refs.splitlines():
-                if line:
-                    # <hash>	<ref>
-                    _, ref = line.split()
-                    ref = Git.branch_without_refs(ref)
-                    heads[remote].append(ref)
-        local = call_output('git branch')
+            cmd ='git for-each-ref refs/remotes/{remote}/ --format "%(refname)"'
+            refs = call_output(cmd.format(remote=remote))
+            for ref in refs.splitlines():
+                #e.g. refs/remotes/origin/git-svn/trunk
+                # Remove refs/remotes
+                ref = Git.branch_without_refs(ref)
+                # remove <remote>/
+                ref = ref[len(remote):].lstrip('/')
+                heads[remote].append(ref)
+
+        local = call_output('git show-ref --heads')
         for line in local.splitlines():
             if line:
-                heads[None] = line
+                _, ref = line.split()
+                ref = Git.branch_without_refs(ref)
+                heads[None].append(ref)
         return heads
 
     @staticmethod
@@ -271,6 +277,10 @@ class Git:
         but in multiple remotes fail.
         '''
         remote_heads = Git.list_heads()
+        local_heads = remote_heads.pop(None)
+        if search in local_heads:
+            return search
+
         matches = []
         for remote, heads in remote_heads.items():
             for head in heads:
@@ -279,8 +289,6 @@ class Git:
                         head = os.path.join(remote, head)
                     matches.append(head)
 
-        if search in matches:
-            return search
         if len(matches) > 1:
             raise GGitExcpetion(Status.AmbiguousReference,
                                 ', '.join(matches))
@@ -871,16 +879,17 @@ class Configure(Subcommand):
         branch = Git.find_branch(config_branch)
         config = GGitConfig.from_branch(branch)
 
-        GGit.setup_git_svn_config(config)
-        GGit.setup_empty_svn(config)
+        with Chdir(Git.toplevel()):
+            GGit.setup_git_svn_config(config)
+            GGit.setup_empty_svn(config)
 
-        # Check if the current HEAD is a git svn branch.
-        log_entry = Git.latest_svn_commit('HEAD')
-        if log_entry is None:
-            print(NON_GIT_HEAD)
-        else:
-            GGit.switch_svn(config.dot_git, log_entry.url, log_entry.revision)
-        return config
+            # Check if the current HEAD is a git svn branch.
+            log_entry = Git.latest_svn_commit('HEAD')
+            if log_entry is None:
+                print(NON_GIT_HEAD)
+            else:
+                GGit.switch_svn(config.dot_git, log_entry.url, log_entry.revision)
+            return config
 
 
 class Initialize(Subcommand):
@@ -920,28 +929,29 @@ class Initialize(Subcommand):
         with Chdir(Git.toplevel()):
             # If branch already exists, just checkout naturally.
             if Git.find_branch(conf_branch) is not None:
-                check_call('git checkout {branch}'.format(branch=conf_branch))
+                forward_check_call('git checkout {branch}'.format(branch=conf_branch))
             else:
-                check_call('git checkout --orphan {branch}'
+                forward_check_call('git checkout --orphan {branch}'
                            .format(branch=conf_branch))
             check_call('git reset')
 
             # Create our config file
             config = GGitConfig(Git.dot_git())
             config.remotes.append(remote)
-            config.write(GIT_CONFIG_FILE)
+            with open(GIT_CONFIG_FILE, 'w') as fp:
+                GGitConfigWriter(config).write(fp)
 
             # Check if the file is the same as the config if so, don't try
             # to commit.
             check_call('git add {config}'.format(config=GIT_CONFIG_FILE))
             if Git.staging_is_dirty():
-                check_call('git commit'
+                forward_check_call('git commit'
                            ' -m "<ggit autocommit> Create config file"')
             else:
                 check_call('git reset')
 
             Configure().run(args)
-            check_call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
+            forward_check_call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
 
 
 class Push(Subcommand):
