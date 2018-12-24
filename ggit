@@ -3,7 +3,6 @@ from __future__ import print_function
 
 import argparse
 import os
-import pprint
 import re
 import shutil
 import subprocess
@@ -18,22 +17,27 @@ GIT_CONFIG_FILE = 'config'
 GIT_SVN_PFX = 'git-svn/'
 GGIT_CONFIG_BRANCH = 'ggit-config'
 
-NON_GIT_HEAD = textwrap.dedent('''
-    The HEAD is not pointing to a git-svn branch.
+NON_GIT_HEAD = '''
+The HEAD is not pointing to a git-svn branch.
 
-    In order to setup a .svn folder, switch branches with ggit:
+In order to setup a .svn folder, switch branches with ggit:
 
-        ggit switch <branch-name>
+    ggit switch <branch-name>
 
-''')
-DIRTY_WORKING = textwrap.dedent('''
+'''
+DIRTY_WORKING = '''
 Refusing to change branches, working directory is dirty.
 
 Consider stashing changes or re-running with --force
 
     git stash --include-untracked
 
-''')
+'''
+
+BRANCH_DOES_NOT_EXIST = """
+Warning: git-svn branch '{remote}' doesn't exist.
+Unable to resolve fetch for '{local}''
+"""
 
 REMOTE_TYPES = {
     'file:///',
@@ -184,20 +188,22 @@ class Git:
         remotes = remotes.splitlines()
 
         remotes.append(None)
-        heads = {remote:[] for remote in remotes}
+        heads = {remote: [] for remote in remotes}
         for remote in remotes:
-            cmd ='git for-each-ref refs/remotes/{remote}/ --format "%(refname)"'
+            cmd = ('git for-each-ref refs/remotes/{remote}/'
+                   ' --format "%(refname)"')
             refs = call_output(cmd.format(remote=remote))
             for ref in refs.splitlines():
-                #e.g. refs/remotes/origin/git-svn/trunk
+                # e.g. refs/remotes/origin/git-svn/trunk
                 # Remove refs/remotes
                 ref = Git.branch_without_refs(ref)
                 # remove <remote>/
                 ref = ref[len(remote):].lstrip('/')
                 heads[remote].append(ref)
 
-        local = call_output('git show-ref --heads'
-                ' || $(git rev-parse --show-toplevel > /dev/null)')
+        local = call_output(
+            'git show-ref --heads'
+            ' || $(git rev-parse --show-toplevel > /dev/null)')
         for line in local.splitlines():
             if line:
                 _, ref = line.split()
@@ -738,7 +744,8 @@ class Clone(Subcommand):
         parser.add_argument('repository')
         parser.add_argument('directory', default=None, nargs='?')
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
-        parser.add_argument('--remap', default='svn/:',
+        parser.add_argument(
+            '--remap', default='svn/:',
             help='Replace an svn fetch path from the gitconfig when fetching'
             ' from origin')
         parser.add_argument('--fetch-gitsvn', action='store_true')
@@ -752,12 +759,13 @@ class Clone(Subcommand):
         try:
             remap_src, remap_dst = remap.split(':')
         except ValueError:
-            raise GGitExcpetion(Status.InvalidArguments, '--remap expects "[]:[]" ')
+            raise GGitExcpetion(Status.InvalidArguments,
+                                '--remap expects "[]:[]" ')
 
         if not Git.ref_exists_on_remote(repository, config_branch):
             print(textwrap.dedent(
                 """
-                The repository '%s' does not ggit config branch '%s'
+                The repository '%s' does not contain ggit config branch '%s'
                 The branch can be set with the --config-branch optioon.
                 """
                 % (repository, config_branch)))
@@ -792,11 +800,8 @@ class Clone(Subcommand):
                                            'refs/remotes/%s"'
                                            % (remote, local))
                     else:
-                        print(textwrap.dedent(
-                            """
-                            Warning: git-svn branch '%s' doesn't exist on branch,
-                            Unable to resolve fetch for '%s'
-                            """ % (remote, local)))
+                        print(BRANCH_DOES_NOT_EXIST.format(
+                            remote=remote, local=local))
 
 
 class Switch(Subcommand):
@@ -890,7 +895,8 @@ class Configure(Subcommand):
             if log_entry is None:
                 print(NON_GIT_HEAD)
             else:
-                GGit.switch_svn(config.dot_git, log_entry.url, log_entry.revision)
+                GGit.switch_svn(config.dot_git, log_entry.url,
+                                log_entry.revision)
             return config
 
 
@@ -933,15 +939,19 @@ class Initialize(Subcommand):
         remote = GitSvnRemote('svn', url, remotes)
 
         Git.enforce_in_repo()
+        if Git.staging_is_dirty():
+            raise GGitExcpetion(Status.RepoIsDirty, DIRTY_WORKING)
+
         # TODO Save the original HEAD so we can restore it.
 
         with Chdir(Git.toplevel()):
             # If branch already exists, just checkout naturally.
             if Git.find_branch(conf_branch) is not None:
-                forward_check_call('git checkout {branch}'.format(branch=conf_branch))
+                forward_check_call('git checkout {branch}'
+                                   .format(branch=conf_branch))
             else:
                 forward_check_call('git checkout --orphan {branch}'
-                           .format(branch=conf_branch))
+                                   .format(branch=conf_branch))
             check_call('git reset')
 
             # Create our config file
@@ -954,13 +964,14 @@ class Initialize(Subcommand):
             # to commit.
             check_call('git add {config}'.format(config=GIT_CONFIG_FILE))
             if Git.staging_is_dirty():
-                forward_check_call('git commit'
-                           ' -m "<ggit autocommit> Create config file"')
+                forward_check_call('git commit -m'
+                                   ' "ggit-autocommit: Create config file"')
             else:
                 check_call('git reset')
 
             Configure().run(args)
-            forward_check_call('git svn fetch -r {revision}:HEAD'.format(revision=rev))
+            forward_check_call('git svn fetch -r {revision}:HEAD'
+                               .format(revision=rev))
 
 
 class Push(Subcommand):
