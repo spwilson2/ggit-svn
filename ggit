@@ -228,27 +228,27 @@ class Git:
         return branch
 
     @staticmethod
-    def latest_svn_commit(hashish):
-        '''
-        Check the git log for the latest git-svn log entry. Return
-        a GitSvnLogEntry object for the entry. If no such entry is found return
-        None.
-        '''
+    def _find_git_svn_log_entry(log_command, filters=[]):
         kwargs = {
                 'stdout': subprocess.PIPE,
                 'stderr': subprocess.PIPE,
                 'shell': False,
         }
-        args = (('git log %s' % hashish).split(),)
+        args = (log_command,)
         (args, kwargs) = _preoprocess_call(*args, **kwargs)
-
         git = subprocess.Popen(*args, **kwargs)
         line_iter = iter(git.stdout.readline, '')
 
         entry = [None]  # Use a mutable object so thread can mutate it.
 
-        def get_entry(line_iter, entry_list):
-            entry_list[0] = GitSvnLogEntry.find_entry(line_iter)
+        def get_entry(line_iter, entry_list, filters):
+            while True:
+                entry = GitSvnLogEntry.find_entry(line_iter)
+                for f in filters:
+                    if not f(entry):
+                        continue
+                entry_list[0] = entry
+                return
 
         thread = threading.Thread(target=get_entry, args=(line_iter, entry))
         thread.start()
@@ -256,6 +256,21 @@ class Git:
         git.communicate()
 
         return entry[0]
+
+    @classmethod
+    def latest_svn_commit(cls, hashish, filters=[]):
+        '''
+        Check the git log for the latest git-svn log entry. Return
+        a GitSvnLogEntry object for the entry. If no such entry is found return
+        None.
+        '''
+        cmd = ('git log %s' % hashish).split()
+        return cls._find_git_svn_log_entry(cmd, filters)
+
+    @classmethod
+    def earliest_svn_commit(cls, hashish, filters=[]):
+        cmd = ('git log --reverse %s' % hashish).split()
+        return cls._find_git_svn_log_entry(cmd, filters)
 
     @staticmethod
     def toplevel():
@@ -828,20 +843,26 @@ class Switch(Subcommand):
                 % hashish)
 
         # Search the log for latest git-svn commit
-        log_entry = Git.latest_svn_commit(hashish)
 
-        if log_entry is None:
+        earliest_log = Git.earliest_svn_commit(hashish)
+
+        if earliest_log is None:
             raise GGitExcpetion(
                 Status.NonSvnCommit,
                 "The given commit '%s' isn't on a git-svn repository."
                 % hashish)
+
+        latest_log = Git.latest_svn_commit(hashish)
+
+        assert latest_log
 
         with Chdir(Git.toplevel()):
             # Run git checkout to complete head change.
             check_call('git checkout %s %s' % (force, hashish))
 
             # Check the .git/ggit/config file for the remote to .svn mapping.
-            GGit.switch_svn(Git.dot_git(), log_entry.url, log_entry.revision)
+            GGit.switch_svn(Git.dot_git(), earliest_log.url, 
+                            latest_log.revision)
 
 
 class Sync(Subcommand):
