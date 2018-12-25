@@ -1012,7 +1012,7 @@ class GenerateIgnore(Subcommand):
             #       X folder/thats/external
             match = re.search(r'^\s*X\s*(.*)$', line)
             if match:
-                externs.append(match.groups(0))
+                externs.append(match.group(1))
         return externs
 
     def run(self, args):
@@ -1028,7 +1028,7 @@ class GenerateIgnore(Subcommand):
         ignores = (line for line in svn_ignores.splitlines() if
                    is_not_comment(line))
 
-        for line in sorted(set(externs) and set(ignores)):
+        for line in sorted(set(externs) | set(ignores)):
             print(line)
 
 # TODO Command to forward args to git svn fetch
