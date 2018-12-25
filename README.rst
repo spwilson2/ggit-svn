@@ -131,7 +131,7 @@ The user should specify an svn url to base all branches off and follow that with
 
 E.g::
 
-    ggit init trunk/rtos:trunk branches/ap/trunk/rtos:aptrunk branches/ap/i11.7/rtos:i11.7
+    ggit init http://rtosvc trunk/rtos:trunk branches/ap/trunk/rtos:aptrunk branches/ap/rtos-i11.7/rtos:i11.7
 
 
 Init tries to configure fetching of git-svn remotes in an intelligent way.
