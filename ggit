@@ -76,13 +76,14 @@ class Status:
     NonSvnCommit = 7
     InvalidArguments = 8
     MissingGitSvn = 9
+    NoSvnRepo = 10
     Error = 100
 
 
 class GGitExcpetion(Exception):
     def __init__(self, status, msg=None):
         self.status = status
-        self.msg = '\n' + msg
+        self.msg = '\n' + str(msg)
         Exception.__init__(self, msg)
 
 
@@ -153,12 +154,12 @@ class Svn:
                 .format(url=url, tmpdir=directory),
                 stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as e:
-            raise GGitExcpetion(textwrap.dedent(
+            raise GGitExcpetion(Status.NoSvnRepo, textwrap.dedent(
                 """
                 {err}
 
-                Unable to svn checkout 'url' does the repository exist?
-                """.formate(url=url, err=e.output)))
+                Unable to svn checkout '{url}' does the repository exist?
+                """.format(url=url, err=e.output)))
 
 
 class Git:
@@ -729,8 +730,8 @@ class Clone(Subcommand):
         parser.add_argument('directory', default=None, nargs='?')
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
         parser.add_argument(
-            '--remap', default='svn/:',
-            help='Replace an svn fetch path from the gitconfig when fetching'
+            '--remap', default='%s:' % GIT_SVN_PFX,
+            help='Replace an svn-remote fetch path when fetching'
             ' from origin')
         parser.add_argument('--fetch-gitsvn', default=True,
                             action='store_false')
