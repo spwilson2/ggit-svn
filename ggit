@@ -172,7 +172,7 @@ class Git:
 
     @staticmethod
     def working_is_dirty():
-        ret = call_status('git ls-files --other --directory --exclude-standard'
+        ret = call_status('git ls-files :/ --other --exclude-standard'
                           '| sed q1',
                           shell=True)
         return bool(ret)
@@ -627,15 +627,23 @@ class GGit(object):
         # Create a .svn dir and symlink the files because subversion won't look
         # at a symlink for it's .svn dir.
         os.mkdir('.svn')
-        for f in os.listdir(svn_path):
+        os.mkdir('.svn/tmp')
+
+        # Svn also has a tendency to remove the tmp dir at random times. It
+        # does so by calling a rmdir routine, we will just let it do its thing
+        # and not link this.
+        dirs = list(os.listdir(svn_path))
+        dirs.remove('tmp')
+        for f in dirs:
             os.symlink(os.path.join(svn_path, f), os.path.join('.svn', f))
 
         # Run svn update to set the revision and depth.
+        check_call('svn cleanup')
         forward_check_call('svn update --force --accept working'
                            ' --set-depth=infinity -r {rev}'
                            ''.format(rev=rev))
         # Run svn revert to clean to a known svn state.
-        # check_call('svn revert -q -R .')
+        check_call('svn revert -R .')
 
     @classmethod
     def _backup_ggit(cls, ggit_path):
@@ -829,6 +837,9 @@ class Switch(Subcommand):
 
             # Check the .git/ggit/config file for the remote to .svn mapping.
             GGit.switch_svn(Git.dot_git(), log_entry.url, log_entry.revision)
+
+            # run checkout once more time to undo git revert attribute changes
+            check_call('git checkout %s %s' % (force, hashish))
 
 
 class Sync(Subcommand):
