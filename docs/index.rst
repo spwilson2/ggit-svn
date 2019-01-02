@@ -8,6 +8,7 @@ Welcome to ggit-svn's documentation!
    readme
    installation
    usage
+   bugs
    modules
    contributing
    authors
