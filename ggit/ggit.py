@@ -240,7 +240,10 @@ class Git:
         return bool(ret)
 
     @staticmethod
-    def ref_exists_on_remote(remote, ref):
+    def head_exists_on_remote(remote, ref):
+        head = 'refs/heads/'
+        if not ref.startswith(head):
+            ref = head + ref
         ret = call_status('git ls-remote -q --exit-code {remote} {ref}'
                           .format(remote=remote, ref=ref))
         return not bool(ret)
@@ -818,11 +821,11 @@ class Clone(Subcommand):
             raise GGitExcpetion(Status.InvalidArguments,
                                 '--remap expects "[]:[]" ')
 
-        if not Git.ref_exists_on_remote(repository, config_branch):
+        if not Git.head_exists_on_remote(repository, config_branch):
             print(textwrap.dedent(
                 """
                 The repository '%s' does not contain ggit config branch '%s'
-                The branch can be set with the --config-branch optioon.
+                The branch can be set with the --config-branch option.
                 """
                 % (repository, config_branch)))
             raise GGitExcpetion(Status.NoConfigBranch)
@@ -852,7 +855,7 @@ class Clone(Subcommand):
 
                 # Setup git svn
                 for (remote, local) in branches:
-                    if Git.ref_exists_on_remote('origin', remote):
+                    if Git.head_exists_on_remote('origin', remote):
                         forward_check_call('git fetch origin "refs/heads/%s:'
                                            'refs/remotes/%s"'
                                            % (remote, local))
@@ -949,6 +952,11 @@ class Configure(Subcommand):
         Git.enforce_in_repo()
 
         branch = Git.find_branch(config_branch)
+        if branch is None:
+            raise GGitExcpetion(
+                    Status.NoConfigBranch,
+                    "No ggit config branch '%s' remote or locally."
+                    % config_branch)
         config = GGitConfig.from_branch(branch)
 
         with Chdir(Git.toplevel()):
