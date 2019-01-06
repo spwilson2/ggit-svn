@@ -4,6 +4,7 @@ from __future__ import print_function
 import argparse
 # import pprint
 import os
+import inspect
 import re
 import shutil
 import subprocess
@@ -96,47 +97,108 @@ class TemporaryDirectory(object):
         shutil.rmtree(self.dir)
 
 
-def _preoprocess_call(*args, **kwargs):
-    if python_version > 2:
-            kwargs['universal_newlines'] = True
+class _CallWrapper(object):
+    def __init__(self, command, **kwargs):
+        self.command = command
+        self.kwargs = kwargs
 
-    if 'shell' not in kwargs:
-        kwargs.setdefault('executable', 'bash')
-        kwargs.setdefault('shell', True)
+    def __enter__(self):
+        self._pipes = []
 
-    kwargs.setdefault('stdout', subprocess.PIPE)
-    kwargs.setdefault('stderr', subprocess.STDOUT)
+        # Setup devnull as the default output pipe.
+        for outfd in ('stderr', 'stdout'):
+            if outfd not in self.kwargs:
+                null = open(os.devnull, 'w')
+                self._pipes.append(null)
+                self.kwargs[outfd] = null
 
-    # pprint.pprint(('Call: ', args, kwargs), stream=sys.stderr)
-    return args, kwargs
+        if python_version > 2:
+                self.kwargs['universal_newlines'] = True
+
+        if 'shell' not in self.kwargs:
+            self.kwargs.setdefault('executable', 'bash')
+            self.kwargs.setdefault('shell', True)
+
+        # TODO Add logging for the call.
+        return self
+
+    def call(self, func):
+        # pprint.pprint(('%s: ' % func.__name__, self.command, self.kwargs),
+        #                stream=sys.stderr)
+        return func(self.command, **self.kwargs)
+
+    def __exit__(self, *args):
+        for p in self._pipes:
+            p.close()
 
 
-def call_output(*args, **kwargs):
+def call_output(command, **kwargs):
     if 'stdout' in kwargs:
         raise ValueError('stdout argument not allowed, it will be overridden.')
-    args, kwargs = _preoprocess_call(*args, **kwargs)
-    del kwargs['stdout']
-    return subprocess.check_output(*args, **kwargs)
+    with _CallWrapper(command, **kwargs) as cw:
+        del cw.kwargs['stdout']
+        return cw.call(Callback(subprocess.check_output))
 
 
-def forward_check_call(*args, **kwargs):
+def forward_check_call(command, **kwargs):
     kwargs.setdefault('stdout', None)
     kwargs.setdefault('stderr', None)
-    args, kwargs = _preoprocess_call(*args, **kwargs)
-    print()
-    print('>> ' + args[0])
-    print()
-    return subprocess.check_call(*args, **kwargs)
+    with _CallWrapper(command, **kwargs) as cw:
+        return cw.call(Callback(subprocess.check_call))
 
 
-def check_call(*args, **kwargs):
-    args, kwargs = _preoprocess_call(*args, **kwargs)
-    return subprocess.check_call(*args, **kwargs)
+def check_call(command, **kwargs):
+    with _CallWrapper(command, **kwargs) as cw:
+        return cw.call(Callback(subprocess.check_call))
 
 
-def call_status(*args, **kwargs):
-    args, kwargs = _preoprocess_call(*args, **kwargs)
-    return subprocess.call(*args, **kwargs)
+def call_status(command, **kwargs):
+    with _CallWrapper(command, **kwargs) as cw:
+        return cw.call(Callback(subprocess.call))
+
+
+class CallbackError(TypeError):
+    def __init__(self, msg, original_exe):
+        self.msg = msg
+        self.exe = original_exe
+        TypeError.__init__(self, msg)
+
+
+class Callback(object):
+    '''A class dedicated to making callbacks more debuggable.'''
+
+    FAIL_TEMPLATE = textwrap.dedent('''
+    Unable to bind arguments to callback.
+
+    Arguments:
+
+        Args: {ARGS}
+
+        Kwargs: {KWARGS}
+
+    Callback created here:
+    File "{FILE}", line {LINE}, in {FUNC}
+      {CODE}
+    ''')
+
+    def __init__(self, func):
+        self.func = func
+        self.caller_frame = inspect.stack()[1]
+
+    def __call__(self, *args, **kwargs):
+        try:
+            inspect.getcallargs(self.func, *args, **kwargs)
+            return self.func(*args, **kwargs)
+        except TypeError as e:
+            msg = self.FAIL_TEMPLATE.format(
+                    CODE=self.caller_frame[4][0],
+                    FUNC=self.caller_frame[3],
+                    LINE=self.caller_frame[2],
+                    FILE=self.caller_frame[1],
+                    ARGS=args,
+                    KWARGS=kwargs,
+                    )
+            raise CallbackError(msg, e)
 
 
 ###############################################################################
@@ -260,25 +322,25 @@ class Git:
         '''
         kwargs = {
                 'stdout': subprocess.PIPE,
-                'stderr': subprocess.PIPE,
                 'shell': False,
         }
-        args = (('git log %s' % hashish).split(),)
-        (args, kwargs) = _preoprocess_call(*args, **kwargs)
+        command = ('git log %s' % hashish).split()
 
-        git = subprocess.Popen(*args, **kwargs)
-        line_iter = iter(git.stdout.readline, '')
+        entry = [None]  # Keep a mutable object so thread can mutate it.
 
-        entry = [None]  # Use a mutable object so thread can mutate it.
+        with _CallWrapper(command, **kwargs) as cw:
+            git = cw.call(Callback(
+                lambda *args, **kwargs: subprocess.Popen(*args, **kwargs)))
+            line_iter = iter(git.stdout.readline, '')
 
-        def get_entry(line_iter, entry_list):
-            entry_list[0] = GitSvnLogEntry.find_entry(line_iter)
+            def get_entry(line_iter, entry_list):
+                entry_list[0] = GitSvnLogEntry.find_entry(line_iter)
 
-        thread = threading.Thread(target=get_entry, args=(line_iter, entry))
-        thread.start()
-        thread.join()
-        git.communicate()
-
+            thread = threading.Thread(target=get_entry,
+                                      args=(line_iter, entry))
+            thread.start()
+            thread.join()
+            git.communicate()
         return entry[0]
 
     @staticmethod
