@@ -901,7 +901,7 @@ class Switch(Subcommand):
             GGit.switch_svn(Git.dot_git(), log_entry.url, log_entry.revision)
 
             # run checkout once more time to undo git revert attribute changes
-            check_call('git checkout %s %s' % (force, hashish))
+            check_call('git checkout %s %s -- :/' % (force, hashish))
 
 
 class Sync(Subcommand):
