@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-from ggit import *
+# flake8: noqa
+
+from .ggit import *
 
 """Top-level package for ggit-svn."""
 

@@ -2,13 +2,15 @@
 ggit-svn
 ========
 
-.. image:: https://img.shields.io/pypi/v/ggit.svg
-        :target: https://pypi.python.org/pypi/ggit
+..
+    .. image:: https://img.shields.io/pypi/v/ggit.svg
+	    :target: https://pypi.python.org/pypi/ggit
+..
+    .. image:: https://img.shields.io/travis/spwilson2/ggit.svg
+	    :target: https://travis-ci.org/spwilson2/ggit-svn
 
-.. image:: https://img.shields.io/travis/spwilson2/ggit.svg
-        :target: https://travis-ci.org/spwilson2/ggit
-
-.. image:: https://readthedocs.org/projects/ggit/badge/?version=latest
+..
+    .. image:: https://readthedocs.org/projects/ggit/badge/?version=latest
         :target: https://ggit.readthedocs.io/en/latest/?badge=latest
         :alt: Documentation Status
 

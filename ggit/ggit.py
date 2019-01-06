@@ -901,7 +901,12 @@ class Switch(Subcommand):
             GGit.switch_svn(Git.dot_git(), log_entry.url, log_entry.revision)
 
             # run checkout once more time to undo git revert attribute changes
-            check_call('git checkout %s %s -- :/' % (force, hashish))
+            try:
+                check_call('git checkout %s -- :/' % force)
+            except subprocess.CalledProcessError:
+                # TODO Only ignore if the error is for a file not existing
+                # i.e. there isn't a root commit.
+                pass
 
 
 class Sync(Subcommand):
@@ -1112,11 +1117,11 @@ class GenerateIgnore(Subcommand):
 
 
 def parse_args(argv):
-    name = argv[0]
     args = argv[1:] if len(argv) > 1 else []
 
     parser = argparse.ArgumentParser(prog='ggit')
     subparsers = parser.add_subparsers(dest='command')
+    subparsers.required = True
     Subcommand.init_parsers(subparsers)
     options = parser.parse_args()
     parser.parse_args(args)

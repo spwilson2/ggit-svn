@@ -3,13 +3,10 @@
 
 """Tests for `ggit` package."""
 
-import pytest
 import os
-import subprocess
-
+import ggit
 
 def test_legacy():
     path = os.path.dirname(os.path.abspath(__file__))
     test = os.path.join(path, 'test.sh')
-    ggit = os.path.join(path, '..', 'ggit.py')
-    subprocess.check_call([test, ggit])
+    ggit.forward_check_call(test)
