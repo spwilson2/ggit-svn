@@ -1111,21 +1111,29 @@ class GenerateIgnore(Subcommand):
 # TODO Command to automate updating a repository with git-svn data (REQ)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(prog='ggit')
+def parse_args(argv):
+    name = argv[0]
+    args = argv[1:] if len(argv) > 1 else []
+
+    parser = argparse.ArgumentParser(prog=name)
     subparsers = parser.add_subparsers(dest='command')
     Subcommand.init_parsers(subparsers)
     options = parser.parse_args()
+    parser.parse_args(args)
     return options.command, vars(options)
 
 
-def main(command, args):
+def main(argv):
+    command, args = parse_args(argv)
     # TODO Assert user had git-svn installed.
     # Check the subparser used, pass the args to the class named after it.
     Subcommand.run_command(command, args)
     return 0
 
 
+def entrypoint():
+    return main(sys.argv)
+
+
 if __name__ == '__main__':
-    parsed = parse_args()
-    sys.exit(main(*parsed))
+    entrypoint()
