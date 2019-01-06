@@ -1,3 +1,17 @@
+========
+ggit-svn
+========
+
+.. image:: https://img.shields.io/pypi/v/ggit.svg
+        :target: https://pypi.python.org/pypi/ggit
+
+.. image:: https://img.shields.io/travis/spwilson2/ggit.svg
+        :target: https://travis-ci.org/spwilson2/ggit
+
+.. image:: https://readthedocs.org/projects/ggit/badge/?version=latest
+        :target: https://ggit.readthedocs.io/en/latest/?badge=latest
+        :alt: Documentation Status
+
 Overview
 ========
 
@@ -12,6 +26,16 @@ This means if an admin can configure automatic pushes of svn commits (generated 
 The only requirement on the repository to enable ggit svn functionality is that the repositiory has a branch which contains a file name ``config`` with remote-svn entries.
 See the ggit-config_ section for more info on the config file.
 The default branch name is ``ggit-config``, however the ``--config-branch`` flag can override this default.
+
+Installation
+^^^^^^^^^^^^
+
+Installing ggit is simple and there are a couple ways to do so.
+The easiest is to install via pip::
+
+    pip install .
+
+If you prefer to place ggit in a known path, you can copy the ``ggit.py`` file (located at ``ggit/ggit.py``).
 
 
 Example Workflow
@@ -229,3 +253,13 @@ For example::
     However, if we do so, and a git-svn branch was rebased onto another (to
     show their related history) then we would run into the same issue without
     a simple workaround.
+
+
+
+Credits
+-------
+
+This package was created with Cookiecutter_ and the `audreyr/cookiecutter-pypackage`_ project template.
+
+.. _Cookiecutter: https://github.com/audreyr/cookiecutter
+.. _`audreyr/cookiecutter-pypackage`: https://github.com/audreyr/cookiecutter-pypackage

@@ -1115,7 +1115,7 @@ def parse_args(argv):
     name = argv[0]
     args = argv[1:] if len(argv) > 1 else []
 
-    parser = argparse.ArgumentParser(prog=name)
+    parser = argparse.ArgumentParser(prog='ggit')
     subparsers = parser.add_subparsers(dest='command')
     Subcommand.init_parsers(subparsers)
     options = parser.parse_args()
