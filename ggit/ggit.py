@@ -13,7 +13,7 @@ import tempfile
 import textwrap
 import threading
 
-VERSION = 0
+from ._metadata import __version__
 
 GIT_CONFIG_FILE = 'config'
 GIT_SVN_PFX = 'git-svn/'
@@ -79,6 +79,10 @@ class Status:
     MissingGitSvn = 9
     NoSvnRepo = 10
     Error = 100
+
+
+def print_version():
+    print('%s : %s' % (__file__, __version__))
 
 
 class GGitExcpetion(Exception):
@@ -1122,6 +1126,13 @@ class GenerateIgnore(Subcommand):
 # TODO Command to create a gcrucible diff
 # TODO Command to initialize a new repository with svn url and branches. (REQ)
 # TODO Command to automate updating a repository with git-svn data (REQ)
+
+
+class Version(Subcommand):
+    '''Display the version number'''
+
+    def run(self, args):
+        print_version()
 
 
 def parse_args(argv):
