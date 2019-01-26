@@ -11,7 +11,6 @@ Welcome to ggit-svn's documentation!
    bugs
    modules
    contributing
-   authors
    history
 
 Indices and tables
