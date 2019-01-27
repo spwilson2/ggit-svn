@@ -119,7 +119,7 @@ class _CallWrapper(object):
         if python_version > 2:
                 self.kwargs['universal_newlines'] = True
 
-        if 'shell' not in self.kwargs:
+        if 'shell' not in self.kwargs and isinstance(self.command, str):
             self.kwargs.setdefault('executable', 'bash')
             self.kwargs.setdefault('shell', True)
 
@@ -1142,8 +1142,7 @@ def parse_args(argv):
     subparsers = parser.add_subparsers(dest='command')
     subparsers.required = True
     Subcommand.init_parsers(subparsers)
-    options = parser.parse_args()
-    parser.parse_args(args)
+    options = parser.parse_args(args)
     return options.command, vars(options)
 
 
