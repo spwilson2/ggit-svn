@@ -1,6 +1,6 @@
-========
-ggit-svn
-========
+=============
+Documentation
+=============
 
 ..
     .. image:: https://img.shields.io/pypi/v/ggit.svg
@@ -22,8 +22,8 @@ For the most part, users can interact with git and subversion as they normally w
 ggit simplifies switching branches and keeping both svn and git in sync when doing so.
 
 That said, ggit strongly favors git users over svn.
-Users should spend most of their development cycle working with a committing to git.
-The main interaction with svn should be for a final commit or to cherry-pick svn merges not available in git.
+Users should spend most of their development cycle working with and committing to git.
+The main interaction with svn should be for a final commit, or to cherry-pick svn merges not available in git.
 
 ggit currently doesn't have support for saving svn properties when switching branches.
 This means any ``svn:mergeinfo`` or custom svn properties will need to be restored before finally committing to svn.
@@ -37,7 +37,7 @@ The only repository requirement is there must be a branch which contains a file 
 See the ggit-config_ section for more info on the ``config`` file.
 
 Installation
-^^^^^^^^^^^^
+============
 
 Installing ggit is simple and there are a couple ways to do so.
 The easiest is to install via pip::
@@ -48,7 +48,7 @@ If you prefer to place ggit in a known path, you can copy the ``ggit.py`` file (
 
 
 Example Workflow
-^^^^^^^^^^^^^^^^
+================
 
 Complete Workflow::
 
@@ -293,34 +293,6 @@ As a complete example::
             fetch = trunk/rtos:refs/remotes/git-svn/trunk
             fetch = branches/ap/trunk/rtos:refs/remotes/git-svn/aptrunk
             fetch = branches/ap/i11.7/rtos:refs/remotes/git-svn/i11.7
-
-BUGS
-====
-
-Cherry picking from a git-svn branch
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-ggit looks at the latest git-svn commit in the log to find the svn URL we are on.
-Because of this you can run into issues when cherry-picking between git-svn branches.
-To fix this issue, you will need to change cherry-picked commit messages to remove the git-svn tag.
-
-For example::
-
-    # We are on branch trunk and want to cherry pick the most recent commit from svn/devel
-    git cherry-pick svn/devel
-
-    # Edit the TODO LIST to "reword" for all commits
-    git rebase -i HEAD^
-     # or since we only cherry-picked a single commit, a git --amend would work as well.
-
-
-.. Developer-Note:
-    We could work around this issue by also peeking at the earliest git log message.
-    However, if we do so, and a git-svn branch was rebased onto another (to
-    show their related history) then we would run into the same issue without
-    a simple workaround.
-
-
 
 Credits
 -------

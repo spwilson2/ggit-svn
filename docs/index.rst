@@ -6,10 +6,14 @@ Welcome to ggit-svn's documentation!
    :caption: Contents:
 
    readme
-   installation
-   usage
+
+Other Info
+==========
+
+.. toctree::
+   :maxdepth: 1
+
    bugs
-   modules
    contributing
    history
 
