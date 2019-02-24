@@ -123,6 +123,8 @@ class _CallWrapper(object):
             self.kwargs.setdefault('executable', 'bash')
             self.kwargs.setdefault('shell', True)
 
+        self.kwargs.setdefault('cwd', os.getcwd())
+
         # TODO Add logging for the call.
         return self
 

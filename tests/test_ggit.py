@@ -12,6 +12,10 @@ import ggit
 call = ggit.check_call
 
 
+class FailedTestException(Exception):
+    pass
+
+
 def run_ggit(args=[]):
     ggit.main(['ggit'] + args)
 
@@ -21,14 +25,20 @@ class TempDir(object):
         self.cleanup = cleanup
         self.path = tempfile.mkdtemp()
 
+    def create(self):
+        call(['mkdir', '-p', self.path])
+
+    def delete(self):
+        shutil.rmtree(self.path)
+
     def __enter__(self):
-        call(['mkdir','-p', self.path])
+        self.create()
         return self
 
     def __exit__(self, *args):
         if self.cleanup:
             pass
-            #shutil.rmtree(self.path)
+            # self.delete()
 
 
 def svn_checkout(server_path, working_dir):
@@ -50,7 +60,6 @@ class SvnCheckout():
             shutil.rmtree(self.dst)
 
 
-
 def path_to_svn_server(path):
     return 'file://%s' % path
 
@@ -67,7 +76,7 @@ class SvnRepoFixture():
         pass
 
     def create_svn_repo(self):
-        call(['mkdir','-p', self.server_path])
+        call(['mkdir', '-p', self.server_path])
         call(['svnadmin', 'create', self.server_path])
 
     def commit_empty_dir(self, empty_dirname):
@@ -148,14 +157,40 @@ TRUNK_BRANCH = 'trunk/rtos'
 APTRUNK_BRANCH = 'branches/ap/trunk/rtos'
 
 
+class PairedRepos():
+    def __init__(self):
+        pass
+
+    def __enter__(self):
+        self.svn = SvnRepoFixture()
+        self.ggit = TempDir()
+
+        self.svn.__enter__()
+        self.ggit.__enter__()
+
+        with ggit.Chdir(self.ggit.path):
+            call('git init --bare'.split())
+
+        with TempDir() as tmp_clone:
+            with ggit.Chdir(tmp_clone.path):
+                init_ggit_repo(self.svn.server_url)
+                call(['git', 'remote', 'add', 'origin', self.ggit.path])
+                run_ggit(['push', 'origin'])
+        return self
+
+    def __exit__(self, *args):
+        self.svn.__exit__(*args)
+        self.ggit.__exit__(*args)
+
+
 def test_svn_repo_fixture_setup():
     with SvnRepoFixture():
         pass
 
 
 def init_ggit_repo(server):
-    run_ggit(['init', server, 
-              TRUNK_BRANCH+':trunk', 
+    run_ggit(['init', server,
+              TRUNK_BRANCH+':trunk',
               APTRUNK_BRANCH+':aptrunk'])
 
 
@@ -172,23 +207,83 @@ def test_smoketest_init():
 def test_clone_from_ggit_repo():
     '''
     Test using ggit to clone from an exisiting ggit repo.
+
+    Ensure it correctly sets up the cloned repository to use git-svn.
     '''
     with SvnRepoFixture() as svn_repo:
         with TempDir() as orig, TempDir() as clone:
+            checkout_path = os.path.join(clone.path, 'checkout')
             with ggit.Chdir(orig.path):
                 init_ggit_repo(svn_repo.server_url)
-            run_ggit(['clone', orig.path, 
-                      os.path.join(clone.path, 'checkout')])
+            run_ggit(['clone', orig.path, checkout_path])
+            with ggit.Chdir(checkout_path):
+                call('git svn fetch'.split())
+            # TODO Also ensure the cloned repo can fetch updates.
 
 
-# TODO Improve fixtures (going to be very deep, copy prone tests if I keep this
-# up.
+def test_push_ggit_repo():
+    with PairedRepos():
+        pass
+
+
+def test_clone_from_remote():
+    with PairedRepos() as repos:
+        run_ggit(['clone', repos.ggit.path])
+
+
+def test_ggit_switch_branches():
+    with PairedRepos() as repos:
+        with TempDir() as clone:
+            checkout_path = os.path.join(clone.path, 'checkout')
+            run_ggit(['clone', repos.ggit.path, checkout_path])
+
+            with ggit.Chdir(checkout_path):
+                run_ggit('switch origin/svn/aptrunk'.split())
+                output = ggit.call_output('svn info --show-item url'.split())
+                if 'ap/trunk/rtos' not in output:
+                    raise FailedTestException(
+                            "ggit switch didn't switch svn path.\n"
+                            "Repo Path: %s\n"
+                            "Output: %s\n" % (checkout_path, output))
+
+
+def test_ggit_sync_switches_branches():
+    with PairedRepos() as repos:
+        with TempDir() as clone:
+            checkout_path = os.path.join(clone.path, 'checkout')
+            run_ggit(['clone', repos.ggit.path, checkout_path])
+
+            with ggit.Chdir(checkout_path):
+                call('git checkout origin/svn/aptrunk'.split())
+                run_ggit('sync --force'.split())
+                output = ggit.call_output('svn info --show-item url'.split())
+                if 'ap/trunk/rtos' not in output:
+                    raise FailedTestException(
+                            "git sync didn't switch svn path.\n"
+                            "Repo Path: %s\n"
+                            "Output: %s\n" % (checkout_path, output))
+
+
+def test_ggit_sync_works_after_git_clean():
+    with PairedRepos() as repos:
+        with TempDir() as clone:
+            checkout_path = os.path.join(clone.path, 'checkout')
+            run_ggit(['clone', repos.ggit.path, checkout_path])
+
+            with ggit.Chdir(checkout_path):
+                call('git checkout origin/svn/aptrunk'.split())
+                call('git clean -xfd')
+                run_ggit('sync'.split())
+                output = ggit.call_output('svn info --show-item url'.split())
+                if 'ap/trunk/rtos' not in output:
+                    raise FailedTestException(
+                            "git sync failed after a git clean\n"
+                            "Repo Path: %s\n"
+                            "Output: %s\n" % (checkout_path, output))
+
 
 # TODO Test coverage needed:
 # * Check that svn and git are clean on a clone
-# * Check that svn works
-# * Check ggit switch
-# * Check ggit sync after a git checkout correctly switches branches.
-# * Check ggit sync works after git clean -xfd
+# * Check that ggit sync changes to the correct svn revision.
 # * Check ggit configure works after deleting the .git/ggit folder
 # * Test generate-ignore
