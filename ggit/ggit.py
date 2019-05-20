@@ -15,6 +15,7 @@ import threading
 
 from ._metadata import __version__
 
+DEFAULT_CACHE_PATH = '~/.ggit/cache'
 GIT_CONFIG_FILE = 'config'
 GIT_SVN_PFX = 'git-svn/'
 GGIT_CONFIG_BRANCH = 'ggit-config'
@@ -584,6 +585,11 @@ class GitConfig(object):
         output = call_output('git config -l --file %s' % path)
         return cls.from_str(output)
 
+    @classmethod
+    def from_complete(cls):
+        output = call_output('git config -l')
+        return cls.from_str(output)
+
 
 class GGitConfig():
     def __init__(self, dot_git):
@@ -758,6 +764,7 @@ class GGit(object):
                 if os.path.lexists(svn_path):
                     shutil.rmtree(svn_path)
                 with TemporaryDirectory() as td:
+                    # TODO If using an svn cache check there first.
                     Svn.empty_checkout(svn_url, td.dir)
                     shutil.copytree(os.path.join(td.dir, '.svn'), svn_path)
 
@@ -1152,6 +1159,53 @@ class GenerateIgnore(Subcommand):
 
         for line in sorted(set(externs) | set(ignores)):
             print(line)
+
+
+class SvnCached(object):
+
+    def __init__(self):
+        pass
+
+    def empty_checkout(self):
+        pass
+
+# TODO Create a class to manage svn caches:
+# * It should be simple to copy one cache to another.
+# * Caches should have the same names everywhere based on the url (e.g. could
+#   use a SHA256 hashmap)
+
+class Cache(Subcommand):
+    '''Push the .svn checkouts into the svn cache.'''
+    # TODO Feature gate.
+
+    def run(self, args):
+        # Check that we are in a git repo.
+        Git.enforce_in_repo()
+
+        # TODO Update the svn cache with our .svn checkouts.
+
+        # Get the cache location
+        git_config = GitConfig.from_complete()
+
+        cache = git_config.get_vals('ggit', 'cachedir')
+        if cache is None:
+            cache = DEFAULT_CACHE_PATH
+
+        # TODO Get the svn folders we are using in this checkout.
+        config = os.path.join(Git.toplevel(), '.git', 'config')
+        config = GGitConfig.from_dot_git(config)
+        caches = {}
+        for remote in config.iter_remotes():
+            for svn_url in remote.urls:
+                svn_path = GGitConfig.url_to_svn_cache(config.dot_git, svn_url)
+
+        # TODO Replace those folders in the cache.
+
+        # List the svn folders we have updated.
+
+        # TODO Eventually only update the svn cache if we have a newer svn rev
+        # version (unless an option is provided to force)
+        pass
 
 # TODO Command to forward args to git svn fetch
 # TODO Command to forward args to git svn rebase, and run svn update afterwards
