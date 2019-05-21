@@ -35,7 +35,7 @@ Consider stashing changes or re-running with --force
     git stash --include-untracked
 
 '''
-UNABLE_TO_CHECKOUT='''
+UNABLE_TO_CHECKOUT = '''
 Unable to checkout the specified branch "%s".  We will skip sync of svn.
 
 Checkout the branch manually after ggit completes and then run:
@@ -124,7 +124,7 @@ class _CallWrapper(object):
                 self.kwargs[outfd] = null
 
         if python_version > 2:
-                self.kwargs['universal_newlines'] = True
+            self.kwargs['universal_newlines'] = True
 
         if 'shell' not in self.kwargs and isinstance(self.command, str):
             self.kwargs.setdefault('executable', 'bash')
@@ -202,13 +202,13 @@ class Callback(object):
             return self.func(*args, **kwargs)
         except TypeError as e:
             msg = self.FAIL_TEMPLATE.format(
-                    CODE=self.caller_frame[4][0],
-                    FUNC=self.caller_frame[3],
-                    LINE=self.caller_frame[2],
-                    FILE=self.caller_frame[1],
-                    ARGS=args,
-                    KWARGS=kwargs,
-                    )
+                CODE=self.caller_frame[4][0],
+                FUNC=self.caller_frame[3],
+                LINE=self.caller_frame[2],
+                FILE=self.caller_frame[1],
+                ARGS=args,
+                KWARGS=kwargs,
+            )
             raise CallbackError(msg, e)
 
 
@@ -335,8 +335,8 @@ class Git:
         None.
         '''
         kwargs = {
-                'stdout': subprocess.PIPE,
-                'shell': False,
+            'stdout': subprocess.PIPE,
+            'shell': False,
         }
         command = ('git log %s' % hashish).split()
 
@@ -416,8 +416,8 @@ class GitSvnLogEntry:
     # git-svn-id: \
     # http://rtosvc/trunk/rtos@274190 d5d84855-3516-0410-9f1e-893281b4b339
     SVN_ENTRY_REGEX = re.compile(
-            r'\s*git-svn-id:\s+(?P<url>[^@]+)@(?P<rev>\d+)'
-            r'\s+(?P<svn_uuid>[0-9a-z\-]+)')
+        r'\s*git-svn-id:\s+(?P<url>[^@]+)@(?P<rev>\d+)'
+        r'\s+(?P<svn_uuid>[0-9a-z\-]+)')
 
     # commit 3505cb1adc010f7dcf18247846fe09d7353acb9c
     GIT_ENTRY_REGEX = re.compile('commit (?P<hash>[0-9a-z]+)')
@@ -947,6 +947,7 @@ class Sync(Subcommand):
     '''
     Update the svn repository to the latest svn commit on the current HEAD
     '''
+
     def init_parser(self, parser):
         parser.add_argument('--force', action='store_true')
 
@@ -987,9 +988,9 @@ class Configure(Subcommand):
         branch = Git.find_branch(config_branch)
         if branch is None:
             raise GGitExcpetion(
-                    Status.NoConfigBranch,
-                    "No ggit config branch '%s' remote or locally."
-                    % config_branch)
+                Status.NoConfigBranch,
+                "No ggit config branch '%s' remote or locally."
+                % config_branch)
         config = GGitConfig.from_branch(branch)
 
         with Chdir(Git.toplevel()):
@@ -1012,6 +1013,7 @@ class Init(Subcommand):
 
     It's recommended to use this within a bare repo or an empty folder.
     '''
+
     def init_parser(self, parser):
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
         parser.add_argument('-r', '--revision', default='0')
@@ -1083,6 +1085,7 @@ class Push(Subcommand):
     '''
     Push git-svn branches and ggit-config to a remote.
     '''
+
     def init_parser(self, parser):
         parser.add_argument('remote')
         parser.add_argument('--force', action='store_true')
