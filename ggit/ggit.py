@@ -35,6 +35,13 @@ Consider stashing changes or re-running with --force
     git stash --include-untracked
 
 '''
+UNABLE_TO_CHECKOUT='''
+Unable to checkout the specified branch "%s".  We will skip sync of svn.
+
+Checkout the branch manually after ggit completes and then run:
+
+    ggit sync
+'''
 
 BRANCH_DOES_NOT_EXIST = """
 Warning: git-svn branch '{remote}' doesn't exist.
@@ -812,6 +819,11 @@ class Clone(Subcommand):
             ' from origin')
         parser.add_argument('--fetch-gitsvn', default=True,
                             action='store_false')
+        parser.add_argument('--branch', '-b',
+                            help=('Checkout the given branch before '
+                                  'initializing svn.'))
+        parser.add_argument('--skip-svn', action='store_true', default=False,
+                            help='Skip initialization of the .svn folder.')
 
     def run(self, args):
         repository = args['repository']
@@ -819,6 +831,9 @@ class Clone(Subcommand):
         config_branch = args['config_branch']
         fetch_svn = args['fetch_gitsvn']
         remap = args['remap']
+        checkout_branch = args['branch']
+        skip_svn = args['skip_svn']
+
         try:
             remap_src, remap_dst = remap.split(':')
         except ValueError:
@@ -846,6 +861,18 @@ class Clone(Subcommand):
                            .format(repo=repository, directory=directory))
 
         with Chdir(directory):
+            if checkout_branch is not None:
+                try:
+                    forward_check_call('git checkout "%s"' % checkout_branch)
+                except subprocess.CalledProcessError:
+                    print(UNABLE_TO_CHECKOUT % checkout_branch)
+                    skip_svn = True
+
+            # TODO Split up high level commands into more intermediate level
+            # ones. This skip_switch option is strange to have to add just for
+            # this functionality.
+            if skip_svn:
+                args['skip_switch'] = True
             config = Configure().run(args)
 
             if fetch_svn:
@@ -945,6 +972,7 @@ class Sync(Subcommand):
 class Configure(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
+        parser.add_argument('--skip-switch', action='store_true')
 
     def run(self, args):
         '''
@@ -952,6 +980,7 @@ class Configure(Subcommand):
         match.
         '''
         config_branch = args['config_branch']
+        skip_switch = args['skip_switch']
         # Check that we are in a git repo.
         Git.enforce_in_repo()
 
@@ -966,14 +995,14 @@ class Configure(Subcommand):
         with Chdir(Git.toplevel()):
             GGit.setup_git_svn_config(config)
             GGit.setup_empty_svn(config)
-
-            # Check if the current HEAD is a git svn branch.
-            log_entry = Git.latest_svn_commit('HEAD')
-            if log_entry is None:
-                print(NON_GIT_HEAD)
-            else:
-                GGit.switch_svn(config.dot_git, log_entry.url,
-                                log_entry.revision)
+            if not skip_switch:
+                # Check if the current HEAD is a git svn branch.
+                log_entry = Git.latest_svn_commit('HEAD')
+                if log_entry is None:
+                    print(NON_GIT_HEAD)
+                else:
+                    GGit.switch_svn(config.dot_git, log_entry.url,
+                                    log_entry.revision)
             return config
 
 
