@@ -100,6 +100,13 @@ class SvnCacheLock(object):
         row = cur.execute("UPDATE %s SET readers = '%s', writer = '%s', tid = '%s' WHERE id = 0" % (self._table, data['readers'], data['writer'], data['tid']))
         pass
 
+    def __enter__(self):
+        self.lock()
+        return self
+
+    def __exit__(self, *args):
+        self.unlock()
+
 class SvnCacheReaderLock(SvnCacheLock):
     def __init__(self, *args, **kwargs):
         SvnCacheLock.__init__(self, *args, **kwargs)

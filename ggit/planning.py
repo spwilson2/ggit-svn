@@ -3,24 +3,60 @@ import hashlib
 import sqlite3
 
 import locker
+from _util import *
 
 # Lower utility layer of svn.
+
+
+def svn_info(dir_='.'):
+    output = call_output('svn info "%s"' % dir_)
+
+    # Call svn info returning metadata:
+    keys = {'depth', 'revision'}
+
+    pairs = {'depth':'infinity'}
+    for line in output.splitlines():
+        split = line.split(':')
+        key = split[0].lower()
+        val = ':'.join(split[1:])
+        if key in keys:
+            pairs[key] = val
+
+    return pairs
 
 class SvnCacheEntry(object):
     def __init__(self, tag, root, revision, depth):
         self.tag = tag
         self.revision = revision
         self.depth = depth
+        self.root = root
+
+    @property
+    def path(self):
+        return SvnCache._cache_path(self.root, self.tag)
 
     def update(self, revision):
-        pass #TODO
+        # Update the checkout. 
+        # NOTE assumes the user has a lock if required.
+        forward_check_call('svn update --force --accept working'
+                ' --set-depth=infinity -r {rev}'
+                ' "{path}"'.format(rev=revision, path=self.path))
 
     def copy_to(self, root):
-        # TODO Must acquire/create a lock in the newly created directory.
-        pass
+        new_entry = SvnCacheEntry(self.tag, root, self.revision, self.depth)
 
-    def checkout(self, output):
-        pass
+        # Must acquire/create a lock in the newly created directory.
+        # NOTE/XXX: This isn't 100% atomic, there could be an ABA problem here.
+        check_call(['mkdir', '-p', root])
+        with new_entry.wlock() as lock:
+            check_call('cp -ra "%s" "%s"' % (self.path, root))
+
+        return new_entry
+
+    def checkout(self):
+        # NOTE Assume lock is held
+        forward_check_call('svn checkout --depth={depth} "{url}" "{loc}"'
+                ''.format(depth=self.depth, url=self.tag.path, loc=self.path))
 
     def rlock(self):
         return locker.SvnCacheReaderLock(self.root)
@@ -34,28 +70,45 @@ class SvnCache(object):
         self.local_dir = local_dir
         self.extern_dir = extern_dir
 
+    def _get_entry(self, root, tag):
+        # Create a SvnCacheEntry if it exists locally
+        cache_path = self._cache_path(root, tag)
+        if os.path.exists(cache_path):
+            info = svn_info(cache_path)
+            return SvnCacheEntry(tag, root, info['revision'], info['depth'])
+
     def get_local_entry(self, tag):
-        # TODO Create a SvnCacheEntry if it exists locally
-        return None
+        return self._get_entry(self.local_dir, tag)
 
     def get_extern_entry(self, tag):
-        # TODO Create a SvnCacheEntry if it exists.
-        return None
+        if self.extern_dir is not None:
+            return self._get_entry(self.extern_dir, tag)
 
     def _update_extern(self, tag):
         pass
 
     @staticmethod
     def _cache_path(dir_, tag):
-        return os.path.join(dir_, hash(tag))
+        return os.path.join(dir_, tag.hash)
 
     def create(self, tag, rev):
-        lcache = self.get_local_entry()
-        if lcache is None:
-            return
+        '''
+        Create a local checkout of the given svn tag. If a checkout already
+        exists..... TODO
+
+        If a checkout does not exist, this cache manager will first check for
+        an external cache to use.
+
+        If the external cache has this tag cached it will be copied over to
+        a local checkout. Before doing so, we will compare revisions of the
+        external cache and the requested revision. If the requested revision is
+        newer, the external cache will be updated to that revision before the
+        copy.
+        '''
+        lcache = self.get_local_entry(tag)
 
         # Check if there exists a cache version.
-        ecache = self.get_extern_entry()
+        ecache = self.get_extern_entry(tag)
         if ecache is not None:
             with ecache.rlock() as lock:
                 
@@ -65,20 +118,28 @@ class SvnCache(object):
                     lock.upgrade()
                     ecache.update(r)
 
-                # Copy the external cache over
-                ecache.copy_to(self._cache_path(self.local_dir, tag))
+                if lcache is not None:
+                    return
+
+                # Copy the external cache over to create a local cache
+                lcache = ecache.copy_to(self._cache_path(self.local_dir, tag))
+                if rev != lcache.revision:
+                    lcache.update(rev)
+
                 lock.unlock()
                 return
 
-        lcache = SvnCacheEntry(tag, self.local_dir, rev, 'infinity')
         with lcache.wlock():
-            lcache.checkout(self._cache_path(self.local_dir, tag))
+            if lcache is None:
+                lcache = SvnCacheEntry(tag, self.local_dir, rev, 'infinity')
+                lcache.checkout()
 
             if self.extern_dir is None:
                 return
 
             # Copy the local cache into an external cache.
             lcache.copy_to(self.extern_dir)
+
 
     def switch(self, tag, rev=None):
         pass #TODO
@@ -95,11 +156,7 @@ class SvnCacheTag(object):
 
         h = hashlib.sha256(self.path)
         h.update(str(ver))
-
-        self.hash_ = h.hexdigest()
-
-    def __hash__(self):
-        return self.hash_
+        self.hash = h.hexdigest()
 
 
 def switch_checkout(ggit, tag, **kwargs):
@@ -111,6 +168,8 @@ def switch_checkout(ggit, tag, **kwargs):
     :param rev: The revision to set the checkout to, if None the revision is not changed.
     '''
     rev = pop_kwarg(kwargs, 'rev') # Revision to set the svn checkout to. 
+
+    # TODO: Get latest rev upstream if no rev given.
 
     # Create a local copy if it doesn't already exist.
     cache = SvnCache(ggit.ggit_local_cache_dir, ggit.ggit_extern_cache_dir)
@@ -124,3 +183,9 @@ def pop_kwarg(kwargs, arg, default=None):
     if arg in kwargs:
         return kwargs.pop(arg)
     return default
+
+if __name__ == '__main__':
+    import pdb; pdb.set_trace()
+    cache = SvnCache('/tmp', '/tmp/cache')
+    tag = SvnCacheTag('http://rtosvc/trunk/rtos/rtos_val/psival/tests')
+    cache.create(tag, 2)
