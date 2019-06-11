@@ -13,8 +13,10 @@ import tempfile
 import textwrap
 import threading
 
+import _svn
 from ._metadata import __version__
 from ._util import *
+from ._util import _CallWrapper
 
 DEFAULT_CACHE_PATH = '~/.ggit/cache'
 GIT_CONFIG_FILE = 'config'
@@ -489,16 +491,6 @@ class GGitConfig():
         self._add_remote(remote)
         return self
 
-    @classmethod
-    def url_to_svn_cache(cls, dot_git, url):
-        # Remove the protocol from the url
-        for remote_type in REMOTE_TYPES:
-            if url.startswith(remote_type):
-                url = url[len(remote_type):]
-                break
-
-        return os.path.join(cls.get_dot_svn_path(dot_git), url)
-
     @property
     def config_path(self):
         return os.path.join(self.dot_git, 'config')
@@ -530,50 +522,12 @@ class GGitConfig():
 class GGit(object):
     @staticmethod
     def switch_svn(dot_git, url, rev):
-        '''
-        NOTE: There are a couple strange details when it comes to implementing
-        a fast switch call for svn.
+        class GG():
+            ggit_local_cache_dir = GGitConfig.get_dot_svn_path(dot_git)
+            ggit_extern_cache_dir = '/tmp/extern-cache'
 
-        One option would be to use svn switch.  There are a couple problems
-        with this approach.  First, .svn doesn't do a good job of keeping a lot
-        of state around, so on very different branches a switch will
-        effectively be a new clone.  Second, switch is still pretty broken when
-        it comes to switching svn externals across branches.  This often leads
-        to a broken .svn and would confuse users.
-
-        The second strange choice we have to deal with is the fact that
-        subversion doesn't use .svn if it is a symlink. So, rather than being
-        able to create a single symlink, we symlink all files in the .svn
-        folder.
-
-        The one issue that could arise with this approach is if subversion
-        creates new files in the .svn folder they will be deleted on switch. We
-        only maintain the folders and files from the original svn checkout.
-        '''
-        svn_path = GGitConfig.url_to_svn_cache(dot_git, url)
-
-        if os.path.exists('.svn'):
-            shutil.rmtree('.svn')
-        # Create a .svn dir and symlink the files because subversion won't look
-        # at a symlink for it's .svn dir.
-        os.mkdir('.svn')
-        os.mkdir('.svn/tmp')
-
-        # Svn also has a tendency to remove the tmp dir at random times. It
-        # does so by calling a rmdir routine, we will just let it do its thing
-        # and not link this.
-        dirs = list(os.listdir(svn_path))
-        dirs.remove('tmp')
-        for f in dirs:
-            os.symlink(os.path.join(svn_path, f), os.path.join('.svn', f))
-
-        # Run svn update to set the revision and depth.
-        check_call('svn cleanup')
-        forward_check_call('svn update --force --accept working'
-                           ' --set-depth=infinity -r {rev}'
-                           ''.format(rev=rev))
-        # Run svn revert to clean to a known svn state.
-        check_call('svn revert -R .')
+        tag = _svn.SvnCacheTag(url)
+        _svn.switch_checkout(GG, tag, '.', rev=rev)
 
     @classmethod
     def _backup_ggit(cls, ggit_path):

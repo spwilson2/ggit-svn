@@ -168,6 +168,14 @@ class SvnCache(object):
             for f in dirs:
                 os.symlink(os.path.join(cache_svn, f), os.path.join('.svn', f))
 
+            # Run svn update to set the revision and depth.
+            check_call('svn cleanup')
+            forward_check_call('svn update --force --accept working'
+                               ' --set-depth=infinity -r {rev}'
+                               ''.format(rev=cache.revision))
+            # Run svn revert to clean to a known svn state.
+            check_call('svn revert -R .')
+
 #
 #
 # Upper command layer of svn.
@@ -182,15 +190,50 @@ class SvnCacheTag(object):
         h.update(str(ver))
         self.hash = h.hexdigest()
 
-
 def switch_checkout(ggit, tag, root, **kwargs):
     '''
+    High-level command to create or switch the svn checkout to a SvnCacheTag in
+    a given root directory. This command can utilize a local cache of svn
+    checkouts so it isn't necessary to clone from the external svn server.
+
+    :param ggit: An instance of the ggit configuration.
+
     :param tag: The reference to the svn checkout to switch to.
+
+    :param root: The base directory of the checkout. (The location a .svn will
+    be placed.)
+
 
     Keyword only params:
 
-    :param rev: The revision to set the checkout to, if None the revision is not changed.
+    :param rev: The revision to set the checkout to, if None the revision is
+    not changed.
     '''
+
+    # NOTE: There are a couple strange details when it comes to implementing
+    # a fast switch call for svn.
+    #
+    # One option would be to use svn switch.  There are a couple problems with
+    # this approach.  First, .svn doesn't do a good job of keeping a lot of
+    # state around, so on very different branches a switch will effectively be
+    # a new clone.  Second, switch is still pretty broken when it comes to
+    # switching svn externals across branches.  This often leads to a broken
+    # .svn and would confuse users.
+    #
+    # Rather than using the `svn switch` subcommand, we keep individual .svn
+    # checkouts for each branch. We then swap these out when switching
+    # branches.
+    #
+    # This approach has its own issues. Subversion doesn't use .svn if it is
+    # a symlink. So, rather than being able to create a single symlink from
+    # .svn to .svn, we symlink all files in the .svn folder.
+    #
+    # The one issue that could arise with this approach is if subversion
+    # creates new files in the .svn folder they will be deleted on switch. We
+    # only maintain the folders and files from the original svn checkout. For
+    # example, the .svn/tmp directory will be removed every time the branch is
+    # switched.
+
     rev = pop_kwarg(kwargs, 'rev') # Revision to set the svn checkout to. 
 
     # Create a local copy if it doesn't already exist.
@@ -207,23 +250,8 @@ def switch_checkout(ggit, tag, root, **kwargs):
         assert lcache
 
     cache.switch_checkout(tag, root)
-    with Chdir(root):
-        info = svn_info(tag.path)
-        rev = info['revision']
 
-        # Run svn update to set the revision and depth.
-        check_call('svn cleanup')
-        forward_check_call('svn update --force --accept working'
-                           ' --set-depth=infinity -r {rev}'
-                           ''.format(rev=rev))
-        # Run svn revert to clean to a known svn state.
-        check_call('svn revert -R .')
-
-def pop_kwarg(kwargs, arg, default=None):
-    if arg in kwargs:
-        return kwargs.pop(arg)
-    return default
-
+# TODO Add a cleanup command to remove all lockfiles.
 
 if __name__ == '__main__':
     class GG():

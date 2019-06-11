@@ -163,4 +163,7 @@ class Callback(object):
             )
             raise CallbackError(msg, e)
 
-
+def pop_kwarg(kwargs, arg, default=None):
+    if arg in kwargs:
+        return kwargs.pop(arg)
+    return default
