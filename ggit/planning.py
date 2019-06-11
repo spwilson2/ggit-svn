@@ -124,7 +124,7 @@ class SvnCache(object):
                     return
 
                 # Copy the external cache over to create a local cache
-                lcache = ecache.copy_to(self._cache_path(self.local_dir, tag))
+                lcache = ecache.copy_to(self.local_dir)
                 if rev != lcache.revision:
                     lcache.update(rev)
 
