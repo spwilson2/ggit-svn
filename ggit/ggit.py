@@ -524,8 +524,16 @@ class GGit(object):
     def switch_svn(dot_git, url, rev):
         class GG():
             ggit_local_cache_dir = GGitConfig.get_dot_svn_path(dot_git)
+
+            # TODO
             ggit_extern_cache_dir = '/tmp/extern-cache'
 
+        if not os.path.exists(GG.ggit_local_cache_dir):
+            os.mkdir(GG.ggit_local_cache_dir)
+        if not os.path.exists(GG.ggit_extern_cache_dir):
+            os.mkdir(GG.ggit_local_extern_dir)
+
+        rev = int(rev)
         tag = _svn.SvnCacheTag(url)
         _svn.switch_checkout(GG, tag, '.', rev=rev)
 
@@ -554,22 +562,6 @@ class GGit(object):
         check_call('echo .svn >> ' + exclude)
 
         config.write()
-
-    @classmethod
-    def setup_empty_svn(cls, config):
-        '''
-        Create empty svn checkout indexes for each remote in the ggit config.
-        '''
-        for remote in config.iter_remotes():
-            for svn_url in remote.urls:
-                svn_path = GGitConfig.url_to_svn_cache(config.dot_git, svn_url)
-                if os.path.lexists(svn_path):
-                    shutil.rmtree(svn_path)
-                with TemporaryDirectory() as td:
-                    # TODO If using an svn cache check there first.
-                    Svn.empty_checkout(svn_url, td.dir)
-                    shutil.copytree(os.path.join(td.dir, '.svn'), svn_path)
-
 
 ###############################################################################
 #
@@ -642,6 +634,7 @@ class Clone(Subcommand):
         remap = args['remap']
         checkout_branch = args['branch']
         skip_svn = args['skip_svn']
+        args['skip_switch'] = False
 
         try:
             remap_src, remap_dst = remap.split(':')
@@ -782,7 +775,7 @@ class Sync(Subcommand):
 class Configure(Subcommand):
     def init_parser(self, parser):
         parser.add_argument('--config-branch', default=GGIT_CONFIG_BRANCH)
-        parser.add_argument('--skip-switch', action='store_true')
+        parser.add_argument('--skip-switch', default=False, action='store_true')
 
     def run(self, args):
         '''
@@ -804,7 +797,6 @@ class Configure(Subcommand):
 
         with Chdir(Git.toplevel()):
             GGit.setup_git_svn_config(config)
-            GGit.setup_empty_svn(config)
             if not skip_switch:
                 # Check if the current HEAD is a git svn branch.
                 log_entry = Git.latest_svn_commit('HEAD')

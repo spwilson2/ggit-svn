@@ -22,6 +22,8 @@ def svn_info(dir_='.'):
         if key in keys:
             pairs[key] = val
 
+    pairs['revision'] = int(pairs['revision'])
+
     return pairs
 
 
@@ -49,9 +51,10 @@ class SvnCacheEntry(object):
 
         # Must acquire/create a lock in the newly created directory.
         # NOTE/XXX: This isn't 100% atomic, there could be an ABA problem here.
-        check_call(['mkdir', '-p', root])
+        check_call(['mkdir', '-p', new_entry.path])
         with new_entry.wlock() as lock:
-            check_call('cp -ra "%s" "%s"' % (self.path, root))
+            svn_path = os.path.join(self.path, '.svn')
+            check_call('cp -ra "%s" "%s"' % (svn_path, new_entry.path))
 
         return new_entry
 
@@ -114,10 +117,10 @@ class SvnCache(object):
         if ecache is not None:
             with ecache.rlock() as lock:
                 
-                # If the revision is newer than the cached version was,
-                # update the cached version in place.
-                if ecache.revision < rev:
-                    lock.upgrade()
+                # If the revision is significantly newer than the cached
+                # version was, update the cached version in place.
+                if ecache.revision < 100 + rev:
+                    lock = lock.upgrade()
                     ecache.update(rev)
 
                 if lcache is not None:
@@ -125,8 +128,8 @@ class SvnCache(object):
 
                 # Copy the external cache over to create a local cache
                 lcache = ecache.copy_to(self.local_dir)
-                if rev != lcache.revision:
-                    lcache.update(rev)
+                #if rev != lcache.revision:
+                #    lcache.update(rev)
 
                 return
 
@@ -167,6 +170,8 @@ class SvnCache(object):
                 dirs.remove('tmp')
             for f in dirs:
                 os.symlink(os.path.join(cache_svn, f), os.path.join('.svn', f))
+
+            #cache.update(cache.revision)
 
             # Run svn update to set the revision and depth.
             check_call('svn cleanup')
@@ -209,7 +214,6 @@ def switch_checkout(ggit, tag, root, **kwargs):
     :param rev: The revision to set the checkout to, if None the revision is
     not changed.
     '''
-
     # NOTE: There are a couple strange details when it comes to implementing
     # a fast switch call for svn.
     #
