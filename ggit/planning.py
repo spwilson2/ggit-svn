@@ -24,6 +24,8 @@ def svn_info(dir_='.'):
 
     return pairs
 
+
+# TODO Calls to Svn should be made through an SvnExecutor object.
 class SvnCacheEntry(object):
     def __init__(self, tag, root, revision, depth):
         self.tag = tag
@@ -114,9 +116,9 @@ class SvnCache(object):
                 
                 # If the revision is newer than the cached version was,
                 # update the cached version in place.
-                if ecache.revision > rev:
+                if ecache.revision < rev:
                     lock.upgrade()
-                    ecache.update(r)
+                    ecache.update(rev)
 
                 if lcache is not None:
                     return
@@ -126,12 +128,15 @@ class SvnCache(object):
                 if rev != lcache.revision:
                     lcache.update(rev)
 
-                lock.unlock()
                 return
 
+        new = False
+        if lcache is None:
+            lcache = SvnCacheEntry(tag, self.local_dir, rev, 'infinity')
+            new = True
+
         with lcache.wlock():
-            if lcache is None:
-                lcache = SvnCacheEntry(tag, self.local_dir, rev, 'infinity')
+            if new:
                 lcache.checkout()
 
             if self.extern_dir is None:
@@ -140,9 +145,28 @@ class SvnCache(object):
             # Copy the local cache into an external cache.
             lcache.copy_to(self.extern_dir)
 
+    def switch_checkout(self, tag, checkout):
+        cache = self.get_local_entry(tag)
+        assert cache
 
-    def switch(self, tag, rev=None):
-        pass #TODO
+        with Chdir(checkout):
+            if os.path.exists('.svn'):
+                shutil.rmtree('.svn')
+            # Create a .svn dir and symlink the files because subversion won't
+            # look at a symlink for its .svn dir.
+            os.mkdir('.svn')
+            os.mkdir('.svn/tmp')
+
+            cache_svn = os.path.join(cache.path, '.svn')
+
+            # Svn also has a tendency to remove the tmp dir at random times. It
+            # does so by calling a rmdir routine, we will just let it do its thing
+            # and not link this.
+            dirs = list(os.listdir(cache_svn))
+            if 'tmp' in dirs:
+                dirs.remove('tmp')
+            for f in dirs:
+                os.symlink(os.path.join(cache_svn, f), os.path.join('.svn', f))
 
 #
 #
@@ -159,7 +183,7 @@ class SvnCacheTag(object):
         self.hash = h.hexdigest()
 
 
-def switch_checkout(ggit, tag, **kwargs):
+def switch_checkout(ggit, tag, root, **kwargs):
     '''
     :param tag: The reference to the svn checkout to switch to.
 
@@ -169,23 +193,46 @@ def switch_checkout(ggit, tag, **kwargs):
     '''
     rev = pop_kwarg(kwargs, 'rev') # Revision to set the svn checkout to. 
 
-    # TODO: Get latest rev upstream if no rev given.
-
     # Create a local copy if it doesn't already exist.
     cache = SvnCache(ggit.ggit_local_cache_dir, ggit.ggit_extern_cache_dir)
-    if not cache.exists(tag):
-        cache.create(tag, rev)
+    lcache = cache.get_local_entry(tag)
+    if not lcache:
+        # Use the latest rev upstream if no rev given.
+        if rev is None:
+            info = svn_info(tag.path)
+            rev = info['revision']
 
-    # Change the local cache to point to this cache
-    cache.switch(tag, rev)
+        cache.create(tag, rev)
+        lcache = cache.get_local_entry(tag)
+        assert lcache
+
+    cache.switch_checkout(tag, root)
+    with Chdir(root):
+        info = svn_info(tag.path)
+        rev = info['revision']
+
+        # Run svn update to set the revision and depth.
+        check_call('svn cleanup')
+        forward_check_call('svn update --force --accept working'
+                           ' --set-depth=infinity -r {rev}'
+                           ''.format(rev=rev))
+        # Run svn revert to clean to a known svn state.
+        check_call('svn revert -R .')
 
 def pop_kwarg(kwargs, arg, default=None):
     if arg in kwargs:
         return kwargs.pop(arg)
     return default
 
+
 if __name__ == '__main__':
+    class GG():
+        ggit_local_cache_dir = '/tmp/local-cache'
+        ggit_extern_cache_dir = '/tmp/extern-cache'
+
     import pdb; pdb.set_trace()
-    cache = SvnCache('/tmp', '/tmp/cache')
     tag = SvnCacheTag('http://rtosvc/trunk/rtos/rtos_val/psival/tests')
-    cache.create(tag, 2)
+    switch_checkout(GG, tag, '/tmp/checkout')
+
+    #cache = SvnCache('/tmp', '/tmp/cache')
+    #cache.create(tag, 281887)
