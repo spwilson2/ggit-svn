@@ -123,6 +123,7 @@ class SvnCacheReaderLock(SvnCacheLock):
 
             data['readers'] = data['readers'] + self._lockid
             self._write_data(con, data)
+        self._upgraded = False
 
     def unlock(self):
         with self._transaction() as (trans, con):
@@ -152,7 +153,12 @@ class SvnCacheReaderLock(SvnCacheLock):
             self._write_data(con, data)
 
             self._upgraded = True
+            # Writer lock is returned in a locked state.
             return SvnCacheWriterLock(self.root)
+
+    def __exit__(self, *args):
+        if not self._upgraded:
+            SvnCacheLock.__exit__(self, *args)
 
 class SvnCacheWriterLock(SvnCacheLock):
     def lock(self):
